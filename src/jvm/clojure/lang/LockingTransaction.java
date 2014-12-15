@@ -36,7 +36,7 @@ static final int COMMITTED = 4;
 final static ThreadLocal<LockingTransaction> transaction = new ThreadLocal<LockingTransaction>();
 
 
-static class RetryEx extends Error{
+public static class RetryEx extends Error{
 }
 
 static class AbortException extends Exception{

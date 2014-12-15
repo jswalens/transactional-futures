@@ -6546,27 +6546,34 @@
   {:added "1.1"
    :static true}
   []
-  (let [d (java.util.concurrent.CountDownLatch. 1)
-        v (atom d)]
+  (let [realized (ref false)
+        v (ref nil)]
     (reify 
      clojure.lang.IDeref
-       (deref [_] (.await d) @v)
+      (deref [_]
+        (dosync
+          (if @realized
+            @v
+            (throw (new clojure.lang.LockingTransaction$RetryEx)))))
+      ; TODO: retry based on reads/sets
      clojure.lang.IBlockingDeref
-       (deref
-        [_ timeout-ms timeout-val]
-        (if (.await d timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-          @v
-          timeout-val))  
+      ; TODO: should wait `timeout-ms` milliseconds, and if the promise is
+      ; still unrealized then, return `timeout-val`.
+      (deref [_ timeout-ms timeout-val]
+        (dosync
+          (if @realized
+            @v
+            (throw (new clojure.lang.LockingTransaction$RetryEx)))))
      clojure.lang.IPending
       (isRealized [this]
-       (zero? (.getCount d)))
+        @realized)
      clojure.lang.IFn
-     (invoke
-      [this x]
-      (when (and (pos? (.getCount d))
-                 (compare-and-set! v d x))
-        (.countDown d)
-        this)))))
+      (invoke [this x]
+        (dosync
+          (when (not @realized)
+            (ref-set realized true)
+            (ref-set v x)
+            this))))))
 
 (defn deliver
   "Delivers the supplied value to the promise, releasing any pending
