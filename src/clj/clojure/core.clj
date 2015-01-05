@@ -2358,6 +2358,13 @@
     (. ref (touch))
     (. ref (deref)))
 
+(defn retry
+  "Must be called in a transaction. Rollbacks the transaction, and restarts it
+  when one of the ref its read changed."
+  {:static true}
+  []
+  (. clojure.lang.LockingTransaction (retry)))
+
 (defmacro sync
   "transaction-flags => TBD, pass nil for now
 
@@ -6554,8 +6561,7 @@
         (dosync
           (if @realized
             @v
-            (throw (new clojure.lang.LockingTransaction$RetryEx)))))
-      ; TODO: retry based on reads/sets
+            (retry))))
      clojure.lang.IBlockingDeref
       ; TODO: should wait `timeout-ms` milliseconds, and if the promise is
       ; still unrealized then, return `timeout-val`.
@@ -6563,7 +6569,7 @@
         (dosync
           (if @realized
             @v
-            (throw (new clojure.lang.LockingTransaction$RetryEx)))))
+            (retry))))
      clojure.lang.IPending
       (isRealized [this]
         @realized)

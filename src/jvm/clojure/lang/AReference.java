@@ -12,7 +12,9 @@
 
 package clojure.lang;
 
-public class AReference implements IReference {
+import java.util.Observable;
+
+public class AReference extends Observable implements IReference {
     private IPersistentMap _meta;
 
     public AReference() {

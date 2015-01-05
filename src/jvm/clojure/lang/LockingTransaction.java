@@ -36,7 +36,15 @@ static final int COMMITTED = 4;
 final static ThreadLocal<LockingTransaction> transaction = new ThreadLocal<LockingTransaction>();
 
 
-public static class RetryEx extends Error{
+public class RetryEx extends Error{
+}
+
+// Retry but wait until at least one of the given refs changes.
+public class RetryAndBlockEx extends Error {
+	Map<Ref, Long> refsToWaitFor;
+	public RetryAndBlockEx(Map<Ref, Long> refsToWaitFor) {
+		this.refsToWaitFor = new HashMap<Ref, Long>(refsToWaitFor); // clone
+	}
 }
 
 static class AbortException extends Exception{
@@ -91,6 +99,7 @@ void stop(int status){
 			}
 		info = null;
 		vals.clear();
+		gets.clear();
 		sets.clear();
 		commutes.clear();
 		//actions.clear();
@@ -104,6 +113,7 @@ long startPoint;
 long startTime;
 final RetryEx retryex = new RetryEx();
 final ArrayList<Agent.Action> actions = new ArrayList<Agent.Action>();
+final Map<Ref, Long> gets = new HashMap<Ref, Long>(); // refs read and their version
 final HashMap<Ref, Object> vals = new HashMap<Ref, Object>();
 final HashSet<Ref> sets = new HashSet<Ref>();
 final TreeMap<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
@@ -256,11 +266,76 @@ static class Notify{
 Object run(Callable fn) throws Exception{
 	boolean done = false;
 	Object ret = null;
+	Map<Ref, Long> waitFor = null;
 	ArrayList<Ref> locked = new ArrayList<Ref>();
 	ArrayList<Notify> notify = new ArrayList<Notify>();
 
 	for(int i = 0; !done && i < RETRY_LIMIT; i++)
 		{
+		if (waitFor != null)
+			{
+			Observer o = null;
+			try
+				{
+				// 1. Lock all refs to wait for
+				assert locked.isEmpty();
+				for (Ref ref : waitFor.keySet())
+					{
+					tryWriteLock(ref); // may throw retryex
+					locked.add(ref);
+					}
+				// 2. If any of them have version > readPoint: proceed
+				for (Map.Entry<Ref, Long> w : waitFor.entrySet())
+					{
+					Ref ref = w.getKey();
+					long readPoint = w.getValue();
+					assert ref.currentVersion() >= readPoint;
+					if (ref.currentVersion() != readPoint)
+						throw retryex;
+					}
+				// 3. Else: add an observer to all of them that will decrement
+				// latch
+				final CountDownLatch latch = new CountDownLatch(1);
+				o = new Observer()
+					{
+						public void update(Observable o, Object arg)
+							{
+							latch.countDown();
+							}
+					};
+				for (Ref ref : waitFor.keySet())
+					{
+					ref.addObserver(o);
+					}
+				// 4. Unlock refs
+				for(int k = locked.size() - 1; k >= 0; --k)
+					{
+					locked.get(k).lock.writeLock().unlock();
+					}
+				locked.clear();
+				// 5. Wait on latch, which is released when a ref updates
+				latch.await(); // may throw InterruptedException: ignore
+				}
+			catch(RetryEx retry)
+				{
+				// retry instead of waiting
+				}
+			finally
+				{
+				// make sure everything is unlocked (if an exception was thrown)
+				for(int k = locked.size() - 1; k >= 0; --k)
+					{
+					locked.get(k).lock.writeLock().unlock();
+					}
+				locked.clear();
+				// remove observers
+				for (Ref ref : waitFor.keySet())
+					{
+					ref.deleteObserver(o); // o might be null
+					}
+				waitFor = null;
+				}
+			}
 		try
 			{
 			getReadPoint();
@@ -347,6 +422,10 @@ Object run(Callable fn) throws Exception{
 				info.status.set(COMMITTED);
 				}
 			}
+		catch(RetryAndBlockEx retry)
+			{
+			waitFor = retry.refsToWaitFor;
+			}
 		catch(RetryEx retry)
 			{
 			//eat this so we retry rather than fall out
@@ -363,11 +442,17 @@ Object run(Callable fn) throws Exception{
 				r.lock.readLock().unlock();
 				}
 			ensures.clear();
+			// Copy modified refs, as stop clears vals.
+			Set<Ref> modifiedRefs = new HashSet<Ref>(vals.keySet());
 			stop(done ? COMMITTED : RETRY);
 			try
 				{
 				if(done) //re-dispatch out of transaction
 					{
+					for(Ref ref : modifiedRefs)
+						{
+						ref.changeAndNotify();
+						}
 					for(Notify n : notify)
 						{
 						n.ref.notifyWatches(n.oldval, n.newval);
@@ -408,7 +493,10 @@ Object doGet(Ref ref){
 		do
 			{
 			if(ver.point <= readPoint)
+				{
+				gets.put(ref, ver.point);
 				return ver.val;
+				}
 			} while((ver = ver.prior) != ref.tvals);
 		}
 	finally
@@ -488,6 +576,16 @@ Object doCommute(Ref ref, IFn fn, ISeq args) {
 	Object ret = fn.applyTo(RT.cons(vals.get(ref), args));
 	vals.put(ref, ret);
 	return ret;
+}
+
+void doRetry() {
+	if(!info.running())
+		throw retryex;
+	throw new RetryAndBlockEx(gets);
+}
+
+public static void retry() {
+	LockingTransaction.getEx().doRetry();
 }
 
 /*
