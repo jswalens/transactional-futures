@@ -110,6 +110,7 @@
         <path location="${build}"/>
 	<path location="${cljsrc}"/>
       </classpath>
+      <jvmarg value="-enableassertions"/>
       <arg value="${test-script}"/>
     </java>
   </target>
