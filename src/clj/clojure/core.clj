@@ -2381,7 +2381,7 @@
   [& body]
   (let [message (when (string? (first body)) (first body))
         body (if message (next body) body)]
-    `(if (clojure.lang.LockingTransaction/isRunning)
+    `(if (clojure.lang.LockingTransaction/isActive)
        (throw (new IllegalStateException ~(or message "I/O in transaction")))
        (do ~@body))))
 

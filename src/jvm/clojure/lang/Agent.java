@@ -244,9 +244,9 @@ public Object dispatch(IFn fn, ISeq args, Executor exec) {
 }
 
 static void dispatchAction(Action action){
-	LockingTransaction trans = LockingTransaction.getRunning();
-	if(trans != null)
-		trans.enqueue(action);
+	TransactionalFuture f = TransactionalFuture.getCurrent();
+	if(f != null) // Inside transaction, delay until commit
+		f.enqueue(action);
 	else if(nested.get() != null)
 		{
 		nested.set(nested.get().cons(action));

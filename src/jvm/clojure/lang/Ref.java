@@ -12,11 +12,14 @@
 
 package clojure.lang;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class Ref extends ARef implements IFn, Comparable<Ref>, IRef{
+	public static final int LOCK_WAIT_MSECS = 100;
+
     public int compareTo(Ref ref) {
         if(this.id == ref.id)
             return 0;
@@ -71,8 +74,7 @@ public static class TVal{
 TVal tvals;
 final AtomicInteger faults;
 final ReentrantReadWriteLock lock;
-LockingTransaction.Info tinfo;
-//IFn validator;
+LockingTransaction.Info latestWriter; // Latest transaction that has written to this ref
 final long id;
 
 volatile int minHistory = 0;
@@ -86,14 +88,70 @@ public Ref(Object initVal) {
 
 public Ref(Object initVal,IPersistentMap meta) {
     super(meta);
-    this.id = ids.getAndIncrement();
-	this.faults = new AtomicInteger();
-	this.lock = new ReentrantReadWriteLock();
 	tvals = new TVal(initVal, 0);
+	faults = new AtomicInteger();
+	lock = new ReentrantReadWriteLock();
+	latestWriter = null;
+	id = ids.getAndIncrement();
 }
 
-//the latest val
+	void lockRead() {
+		lock.readLock().lock();
+	}
 
+	void unlockRead() {
+		lock.readLock().unlock();
+	}
+
+	void unlockWrite() {
+		lock.writeLock().unlock();
+	}
+
+	// Lock the ref for writing, for the given transaction.
+	// Returns the most recent val.
+	Object lockWrite(LockingTransaction tx) {
+		boolean locked = false;
+		try {
+			tryWriteLock();
+			locked = true;
+
+			if(tvals != null && tvals.point > tx.readPoint)
+				throw new LockingTransaction.RetryEx();
+
+			LockingTransaction.Info latest = latestWriter;
+
+			// Write lock conflict: someone already locked this
+			if(latest != null && latest != tx.info && latest.running()) {
+				boolean barged = tx.barge(latest);
+				// Try to barge other, if it didn't work, unlock and "block and
+				// bail" (i.e. stop this transaction, wait until other one has
+				// finished, then retry).
+				if(!barged) {
+					unlockWrite();
+					locked = false;
+					return tx.blockAndBail(latest);
+				}
+			}
+			latestWriter = tx.info;
+			// Note: even if we do tx.info = null at a later point, this keeps
+			// a pointer to the original info
+			return tvals == null ? null : tvals.val;
+		} finally {
+			if(locked)
+				unlockWrite();
+		}
+	}
+
+	void tryWriteLock() {
+		try {
+			if(!lock.writeLock().tryLock(LOCK_WAIT_MSECS, TimeUnit.MILLISECONDS))
+				throw new LockingTransaction.RetryEx();
+		} catch(InterruptedException e)	{
+			throw new LockingTransaction.RetryEx();
+		}
+	}
+
+//the latest val
 // ok out of transaction
 Object currentVal(){
 	try
@@ -109,73 +167,30 @@ Object currentVal(){
 		}
 }
 
-//*
-
 public Object deref(){
-	LockingTransaction t = LockingTransaction.getRunning();
-	if(t == null)
+	TransactionalFuture f = TransactionalFuture.getCurrent();
+	if(f == null)
 		return currentVal();
-	return t.doGet(this);
+	return f.doGet(this);
 }
 
-//void validate(IFn vf, Object val){
-//	try{
-//		if(vf != null && !RT.booleanCast(vf.invoke(val)))
-//            throw new IllegalStateException("Invalid ref state");
-//		}
-//    catch(RuntimeException re)
-//        {
-//        throw re;
-//        }
-//	catch(Exception e)
-//		{
-//		throw new IllegalStateException("Invalid ref state", e);
-//		}
-//}
-//
-//public void setValidator(IFn vf){
-//	try
-//		{
-//		lock.writeLock().lock();
-//		validate(vf,currentVal());
-//		validator = vf;
-//		}
-//	finally
-//		{
-//		lock.writeLock().unlock();
-//		}
-//}
-//
-//public IFn getValidator(){
-//	try
-//		{
-//		lock.readLock().lock();
-//		return validator;
-//		}
-//	finally
-//		{
-//		lock.readLock().unlock();
-//		}
-//}
-
 public Object set(Object val){
-	return LockingTransaction.getEx().doSet(this, val);
+	return TransactionalFuture.getEx().doSet(this, val);
 }
 
 public Object commute(IFn fn, ISeq args) {
-	return LockingTransaction.getEx().doCommute(this, fn, args);
+	return TransactionalFuture.getEx().doCommute(this, fn, args);
 }
 
 public Object alter(IFn fn, ISeq args) {
-	LockingTransaction t = LockingTransaction.getEx();
-	return t.doSet(this, fn.applyTo(RT.cons(t.doGet(this), args)));
+	TransactionalFuture f = TransactionalFuture.getEx();
+	return f.doSet(this, fn.applyTo(RT.cons(f.doGet(this), args)));
 }
 
 public void touch(){
-	LockingTransaction.getEx().doEnsure(this);
+	TransactionalFuture.getEx().doEnsure(this);
 }
 
-//*/
 boolean isBound(){
 	try
 		{
