@@ -224,7 +224,7 @@ public class TransactionalFuture {
     }
 
     // Agent send
-    public void enqueue(Agent.Action action) {
+    void enqueue(Agent.Action action) {
         actions.add(action);
     }
 
