@@ -8,8 +8,6 @@
  *   You must not remove this notice, or any other, from this software.
  **/
 
-/* rich Jul 26, 2007 */
-
 package clojure.lang;
 
 import java.util.*;
@@ -22,33 +20,51 @@ import java.util.concurrent.CountDownLatch;
 @SuppressWarnings({"SynchronizeOnNonFinalField"})
 public class LockingTransaction {
 
+    // Time constants
     public static final int RETRY_LIMIT = 10000;
     public static final int LOCK_WAIT_MSECS = 100;
     public static final long BARGE_WAIT_NANOS = 10 * 1000000; // 10 millis
 
+    // Transaction states
     static final int RUNNING = 0;
     static final int COMMITTING = 1;
     static final int RETRY = 2;
     static final int KILLED = 3;
     static final int COMMITTED = 4;
 
+
+    // Transaction running in current thread (can be null)
     final static ThreadLocal<LockingTransaction> transaction = new ThreadLocal<LockingTransaction>();
 
 
-    // Retry transaction (on conflict).
+    // Retry transaction (on conflict)
     static class RetryEx extends Error {
     }
 
-    // Transaction has stopped (due to barge).
+    // Transaction has stopped (due to barge)
     static class StoppedEx extends Error {
     }
 
+    // Transaction has been aborted
     static class AbortException extends Exception {
     }
 
+
+    // Last time point consumed by a transaction.
+    // Transactions will consume a point for init, for each retry, and on commit
+    // if writing. This defines a total order on transaction.
+    final static AtomicLong lastPoint = new AtomicLong();
+
+
+    // Info for a transaction
     public static class Info {
+        // Transaction state (RUNNING, COMMITTING, RETRY...)
         final AtomicInteger status;
+        // Time point at which transaction started.
         final long startPoint;
+        // Latch, starts at 1 and counts down when transaction stops
+        // (successfully or not). Await on this to wait until a transaction has
+        // succeeded.
         final CountDownLatch latch;
 
         public Info(int status, long startPoint) {
@@ -64,25 +80,39 @@ public class LockingTransaction {
     }
 
 
-    // Total order on transactions.
-    // Transactions will consume a point for init, for each retry, and on commit
-    // if writing.
-    final private static AtomicLong lastPoint = new AtomicLong();
-
-    void acquireReadPoint() {
-        readPoint = lastPoint.incrementAndGet();
-    }
-
-    long acquireCommitPoint() {
-        return lastPoint.incrementAndGet();
-    }
-
-
+    // Transaction info. Can be read by other transactions.
     Info info;
-    long readPoint;
+    // Time point at which transaction was first started.
     long startPoint;
+    // Time at which transaction first started.
     long startTime;
+    // Time point at which current attempt of transaction started.
+    long readPoint;
+    // Futures created in transaction.
     List<TransactionalFuture> futures = new ArrayList<TransactionalFuture>();
+
+
+    // Is this thread in a transaction?
+    static public boolean isActive() {
+        return getCurrent() != null;
+    }
+
+    // Get this thread's transaction (possibly null).
+    static LockingTransaction getCurrent() {
+        LockingTransaction t = transaction.get();
+        if (t == null || t.info == null)
+            return null;
+        return t;
+    }
+
+    // Get this thread's transaction. Throws exception if no transaction is
+    // running.
+    static LockingTransaction getEx() {
+        LockingTransaction t = transaction.get();
+        if (t == null || t.info == null)
+            throw new IllegalStateException("No transaction running");
+        return t;
+    }
 
 
     // Indicate transaction as having stopped (with certain state).
@@ -103,8 +133,9 @@ public class LockingTransaction {
     }
 
 
-    // Try to "barge" the given transaction (if this one is older, will kill
-    // the other one).
+    // Try to "barge" the other transaction: if this transaction is older, and
+    // we've been waiting for at least BARGE_WAIT_NANOS (10 ms), kill the other
+    // one.
     boolean barge(LockingTransaction.Info other) {
         boolean barged = false;
         // if this transaction is older, try to abort the other
@@ -117,6 +148,7 @@ public class LockingTransaction {
         return barged;
     }
 
+    // Has enough time elapsed to try to barge?
     private boolean bargeTimeElapsed() {
         return System.nanoTime() - startTime > BARGE_WAIT_NANOS;
     }
@@ -140,27 +172,8 @@ public class LockingTransaction {
     }
 
 
-    // Are we currently in a transaction?
-    static public boolean isActive() {
-        return getCurrent() != null;
-    }
-
-    static LockingTransaction getCurrent() {
-        LockingTransaction t = transaction.get();
-        if (t == null || t.info == null)
-            return null;
-        return t;
-    }
-
-    // getCurrent, but throw exception if no transaction is running.
-    static LockingTransaction getEx() {
-        LockingTransaction t = transaction.get();
-        if (t == null || t.info == null)
-            throw new IllegalStateException("No transaction running");
-        return t;
-    }
-
-
+    // Run fn in a transaction.
+    // If we're already in a transaction, use that one, else creates one.
     static public Object runInTransaction(Callable fn) throws Exception {
         LockingTransaction t = transaction.get();
         Object ret;
@@ -183,6 +196,7 @@ public class LockingTransaction {
         return ret;
     }
 
+    // Run fn in transaction.
     Object run(Callable fn) throws Exception {
         boolean committed = false;
         Object ret = null;
@@ -192,7 +206,7 @@ public class LockingTransaction {
         for (int i = 0; !committed && i < RETRY_LIMIT; i++) {
             boolean finished = false;
 
-            acquireReadPoint();
+            readPoint = lastPoint.incrementAndGet();
             if (i == 0) {
                 startPoint = readPoint;
                 startTime = System.nanoTime();
@@ -207,9 +221,9 @@ public class LockingTransaction {
                 assert futures.size() == 1;
                 finished = true;
             } catch (StoppedEx ex) {
-                // eat this, finished will stay false
+                // eat this, finished will stay false, and we'll retry
             } catch (RetryEx ex) {
-                // eat this, finished will stay false
+                // eat this, finished will stay false, and we'll retry
             }
             TransactionalFuture.future.remove();
             if (!finished) {
