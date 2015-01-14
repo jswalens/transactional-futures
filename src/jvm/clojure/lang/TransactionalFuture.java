@@ -15,73 +15,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class TransactionalFuture {
 
-    final static ThreadLocal<TransactionalFuture> future = new ThreadLocal<TransactionalFuture>();
-
-
-    final ArrayList<Agent.Action> actions = new ArrayList<Agent.Action>();
-    final HashMap<Ref, Object> vals = new HashMap<Ref, Object>();
-    final HashSet<Ref> sets = new HashSet<Ref>();
-    final TreeMap<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
-    final HashSet<Ref> ensures = new HashSet<Ref>();  // all hold readLock
-
-    final LockingTransaction tx;
-
-    // Used to stop this future from elsewhere (e.g. for barge).
-    final AtomicBoolean running = new AtomicBoolean(false);
-
-    TransactionalFuture(LockingTransaction tx) {
-        this.tx = tx;
-        running.set(true);
-        assert future.get() == null;
-        future.set(this);
-    }
-
-    // Are we currently in a transactional future?
-    static public boolean isActive() {
-        return getCurrent() != null;
-    }
-
-    static TransactionalFuture getCurrent() {
-        return future.get(); // possibly null
-    }
-
-    // getCurrent, but throw exception if no transaction is running.
-    static TransactionalFuture getEx() {
-        TransactionalFuture f = future.get();
-        if (f == null) {
-            assert LockingTransaction.getCurrent() == null;
-            throw new IllegalStateException("No transaction running");
-        }
-        return f;
-    }
-
-    // Indicate future as having stopped (with certain transaction state).
-    // OK to call twice (idempotent).
-    void stop(int status) {
-        running.set(false);
-        // From now on, all operations on refs will throw STOPPED_EX.
-        vals.clear();
-        sets.clear();
-        commutes.clear();
-        for (Ref r : ensures) {
-            r.unlockRead();
-        }
-        ensures.clear();
-        if (status == LockingTransaction.COMMITTED) {
-            try {
-                for (Agent.Action action : actions) {
-                    Agent.dispatchAction(action);
-                    // by now, TransactionFuture.future.get() is null, so
-                    // dispatches happen immediately
-                }
-            } finally {
-                actions.clear();
-            }
-        } else {
-            actions.clear();
-        }
-    }
-
     // Commute function
     static class CFn {
         final IFn fn;
@@ -93,10 +26,87 @@ public class TransactionalFuture {
         }
     }
 
-    public void enqueue(Agent.Action action) {
-        actions.add(action);
+
+    // Future running in current thread (can be null)
+    final static ThreadLocal<TransactionalFuture> future = new ThreadLocal<TransactionalFuture>();
+
+
+    // Transaction for this future
+    final LockingTransaction tx;
+
+    // In transaction values of refs (both read and written)
+    final Map<Ref, Object> vals = new HashMap<Ref, Object>();
+    // Refs set in transaction. (Their value is in vals.)
+    final Set<Ref> sets = new HashSet<Ref>();
+    // Refs commuted, and list of commute functions.
+    final Map<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
+    // Ensured refs. All hold readLock.
+    final Set<Ref> ensures = new HashSet<Ref>();
+    // Agent sends.
+    final List<Agent.Action> actions = new ArrayList<Agent.Action>();
+
+    // Is transaction running?
+    // Used to stop this future from elsewhere (e.g. for barge).
+    final AtomicBoolean running = new AtomicBoolean(false);
+
+
+    TransactionalFuture(LockingTransaction tx) {
+        this.tx = tx;
+        running.set(true);
+        assert future.get() == null;
+        future.set(this);
     }
 
+
+    // Is this thread in a future?
+    static public boolean isActive() {
+        return getCurrent() != null;
+    }
+
+    // Get this thread's future (possibly null).
+    static TransactionalFuture getCurrent() {
+        return future.get();
+    }
+
+    // Get this thread's future. Throws exception if no future/transaction is
+    // running.
+    static TransactionalFuture getEx() {
+        TransactionalFuture f = future.get();
+        if (f == null) {
+            // no future should => no transaction
+            assert LockingTransaction.getCurrent() == null;
+            throw new IllegalStateException("No transaction running");
+        }
+        return f;
+    }
+
+
+    // Indicate future as having stopped (with certain transaction state).
+    // OK to call twice (idempotent).
+    void stop(int status) {
+        running.set(false);
+        // From now on, all operations on refs will throw StoppedEx
+        vals.clear();
+        sets.clear();
+        commutes.clear();
+        for (Ref r : ensures) {
+            r.unlockRead();
+        }
+        ensures.clear();
+        try {
+            if (status == LockingTransaction.COMMITTED) {
+                for (Agent.Action action : actions) {
+                    Agent.dispatchAction(action);
+                    // By now, TransactionFuture.future.get() is null, so
+                    // dispatches happen immediately
+                }
+            }
+        } finally {
+            actions.clear();
+        }
+    }
+
+    // Get
     Object doGet(Ref ref) {
         if (!running.get())
             throw new LockingTransaction.StoppedEx();
@@ -114,11 +124,12 @@ public class TransactionalFuture {
         } finally {
             ref.unlockRead();
         }
-        //no version of val precedes the read point
+        // No version of val precedes the read point (not enough versions kept)
         ref.faults.incrementAndGet();
         throw new LockingTransaction.RetryEx();
     }
 
+    // Set
     Object doSet(Ref ref, Object val) {
         if (!running.get())
             throw new LockingTransaction.StoppedEx();
@@ -133,6 +144,7 @@ public class TransactionalFuture {
         return val;
     }
 
+    // Ensure
     void doEnsure(Ref ref) {
         if (!running.get())
             throw new LockingTransaction.StoppedEx();
@@ -140,7 +152,7 @@ public class TransactionalFuture {
             return;
         ref.lockRead();
 
-        //someone completed a write after our snapshot
+        // Someone completed a write after our snapshot => retry
         if (ref.tvals != null && ref.tvals.point > tx.readPoint) {
             ref.unlockRead();
             throw new LockingTransaction.RetryEx();
@@ -148,11 +160,11 @@ public class TransactionalFuture {
 
         LockingTransaction.Info latestWriter = ref.latestWriter;
 
-        //writer exists
+        // Writer exists (maybe us?)
         if (latestWriter != null && latestWriter.running()) {
             ref.unlockRead();
 
-            if (latestWriter != tx.info) { // not us, ensure is doomed
+            if (latestWriter != tx.info) { // Not us, ensure is doomed
                 tx.blockAndBail(latestWriter);
             }
         } else {
@@ -160,6 +172,7 @@ public class TransactionalFuture {
         }
     }
 
+    // Commute
     Object doCommute(Ref ref, IFn fn, ISeq args) {
         if (!running.get())
             throw new LockingTransaction.StoppedEx();
@@ -189,6 +202,13 @@ public class TransactionalFuture {
         }
     }
 
+    // Agent send
+    public void enqueue(Agent.Action action) {
+        actions.add(action);
+    }
+
+
+    // Notify watches
     private static class Notify {
         final public Ref ref;
         final public Object oldval;
@@ -201,90 +221,104 @@ public class TransactionalFuture {
         }
     }
 
+    // Commit
     boolean commit(LockingTransaction tx) {
         assert tx.isActive();
 
         boolean done = false;
-        ArrayList<Ref> locked = new ArrayList<Ref>();
+        ArrayList<Ref> locked = new ArrayList<Ref>(); // write locks
         ArrayList<Notify> notify = new ArrayList<Notify>();
         try {
-            // make sure no one has killed us before this point, and can't from
-            // now on
-            if (tx.info.status.compareAndSet(LockingTransaction.RUNNING,
+            // If no one has killed us before this point, and make sure they
+            // can't from now on. If they have: retry, done stays false.
+            if (!tx.info.status.compareAndSet(LockingTransaction.RUNNING,
                     LockingTransaction.COMMITTING)) {
-                for (Map.Entry<Ref, ArrayList<CFn>> e : commutes.entrySet()) {
-                    Ref ref = e.getKey();
-                    if (sets.contains(ref)) continue;
+                throw new LockingTransaction.RetryEx();
+            }
 
-                    boolean wasEnsured = ensures.contains(ref);
-                    //can't upgrade readLock, so release it
-                    releaseIfEnsured(ref);
-                    ref.tryWriteLock();
-                    locked.add(ref);
-                    if (wasEnsured && ref.tvals != null && ref.tvals.point > tx.readPoint)
+            // Commutes: write-lock them, re-calculate and put in vals
+            for (Map.Entry<Ref, ArrayList<CFn>> e : commutes.entrySet()) {
+                Ref ref = e.getKey();
+                if (sets.contains(ref)) {
+                    // commute and set: no need to re-execute, use latest val
+                    continue;
+                }
+
+                boolean wasEnsured = ensures.contains(ref);
+                // Can't upgrade readLock, so release it
+                releaseIfEnsured(ref);
+                ref.tryWriteLock();
+                locked.add(ref);
+                if (wasEnsured && ref.tvals != null && ref.tvals.point > tx.readPoint)
+                    throw new LockingTransaction.RetryEx();
+
+                LockingTransaction.Info latest = ref.latestWriter;
+                if (latest != null && latest != tx.info && latest.running()) {
+                    boolean barged = tx.barge(latest);
+                    // Try to barge other, if it didn't work retry this tx
+                    if (!barged)
                         throw new LockingTransaction.RetryEx();
-
-                    LockingTransaction.Info latest = ref.latestWriter;
-                    if (latest != null && latest != tx.info && latest.running()) {
-                        boolean barged = tx.barge(latest);
-                        // Try to barge other, if it didn't work retry this tx
-                        if (!barged)
-                            throw new LockingTransaction.RetryEx();
-                    }
-                    Object val = ref.tvals == null ? null : ref.tvals.val;
-                    vals.put(ref, val);
-                    for (CFn f : e.getValue()) {
-                        vals.put(ref, f.fn.applyTo(RT.cons(vals.get(ref), f.args)));
-                    }
                 }
-                for (Ref ref : sets) {
-                    ref.tryWriteLock();
-                    locked.add(ref);
+                Object val = ref.tvals == null ? null : ref.tvals.val;
+                vals.put(ref, val);
+                for (CFn f : e.getValue()) {
+                    vals.put(ref, f.fn.applyTo(RT.cons(vals.get(ref), f.args)));
                 }
+            }
 
-                //validate and enqueue notifications
-                for (Map.Entry<Ref, Object> e : vals.entrySet()) {
-                    Ref ref = e.getKey();
-                    ref.validate(ref.getValidator(), e.getValue());
+            // Sets: write-lock them
+            for (Ref ref : sets) {
+                ref.tryWriteLock();
+                locked.add(ref);
+            }
+
+            // Validate (if invalid, throws IllegalStateException)
+            for (Map.Entry<Ref, Object> e : vals.entrySet()) {
+                Ref ref = e.getKey();
+                ref.validate(ref.getValidator(), e.getValue());
+            }
+
+            // At this point, all values calced, all refs to be written locked,
+            // so commit.
+            long commitPoint = LockingTransaction.lastPoint.incrementAndGet();
+            for (Map.Entry<Ref, Object> e : vals.entrySet()) {
+                Ref ref = e.getKey();
+                Object oldval = ref.tvals == null ? null : ref.tvals.val;
+                Object newval = e.getValue();
+                int hcount = ref.histCount();
+
+                if (ref.tvals == null) {
+                    ref.tvals = new Ref.TVal(newval, commitPoint);
+                } else if ((ref.faults.get() > 0 && hcount < ref.maxHistory)
+                        || hcount < ref.minHistory) {
+                    ref.tvals = new Ref.TVal(newval, commitPoint, ref.tvals);
+                    ref.faults.set(0);
+                } else {
+                    ref.tvals = ref.tvals.next;
+                    ref.tvals.val = newval;
+                    ref.tvals.point = commitPoint;
                 }
+                // Notify refs with watches
+                if (ref.getWatches().count() > 0)
+                    notify.add(new Notify(ref, oldval, newval));
+            }
 
-                //at this point, all values calced, all refs to be written locked
-                //no more client code to be called
-                long commitPoint = LockingTransaction.lastPoint.incrementAndGet();
-                for (Map.Entry<Ref, Object> e : vals.entrySet()) {
-                    Ref ref = e.getKey();
-                    Object oldval = ref.tvals == null ? null : ref.tvals.val;
-                    Object newval = e.getValue();
-                    int hcount = ref.histCount();
-
-                    if (ref.tvals == null) {
-                        ref.tvals = new Ref.TVal(newval, commitPoint);
-                    } else if ((ref.faults.get() > 0 && hcount < ref.maxHistory)
-                            || hcount < ref.minHistory) {
-                        ref.tvals = new Ref.TVal(newval, commitPoint, ref.tvals);
-                        ref.faults.set(0);
-                    } else {
-                        ref.tvals = ref.tvals.next;
-                        ref.tvals.val = newval;
-                        ref.tvals.point = commitPoint;
-                    }
-                    if (ref.getWatches().count() > 0)
-                        notify.add(new Notify(ref, oldval, newval));
-                }
-
-                done = true;
-                tx.info.status.set(LockingTransaction.COMMITTED);
-            } // else: done stays false
+            // Done
+            tx.info.status.set(LockingTransaction.COMMITTED);
+            done = true;
         } catch (LockingTransaction.RetryEx ex) {
             // eat this, done will stay false
         } finally {
+            // Unlock
             for (int k = locked.size() - 1; k >= 0; --k) {
                 locked.get(k).unlockWrite();
             }
             locked.clear();
+            // Clear properties of tx and its futures
             tx.stop(done ? LockingTransaction.COMMITTED : LockingTransaction.RETRY);
+            // Send notifications
             try {
-                if (done) { // re-dispatch out of transaction
+                if (done) {
                     for (Notify n : notify) {
                         n.ref.notifyWatches(n.oldval, n.newval);
                     }

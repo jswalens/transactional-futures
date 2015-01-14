@@ -126,10 +126,10 @@ public class LockingTransaction {
                 info.latch.countDown();
             }
             info = null;
-            for (TransactionalFuture f : futures)
-                f.stop(status);
-            futures.clear();
         }
+        for (TransactionalFuture f : futures)
+            f.stop(status);
+        futures.clear();
     }
 
 
