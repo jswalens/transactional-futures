@@ -23,9 +23,8 @@ import java.util.concurrent.CountDownLatch;
 public class LockingTransaction {
 
     public static final int RETRY_LIMIT = 10000;
-    public static final int LOCK_WAIT_MSECS = 100; // XXX also moved to Ref, maybe not needed anymore here?
+    public static final int LOCK_WAIT_MSECS = 100;
     public static final long BARGE_WAIT_NANOS = 10 * 1000000; // 10 millis
-    //public static int COMMUTE_RETRY_LIMIT = 10;
 
     static final int RUNNING = 0;
     static final int COMMITTING = 1;
@@ -83,6 +82,8 @@ public class LockingTransaction {
     List<TransactionalFuture> futures = new ArrayList<TransactionalFuture>();
 
 
+    // Indicate transaction as having stopped (with certain state).
+    // OK to call twice (idempotent).
     void stop(int status) {
         if (info != null) {
             synchronized (info) {
@@ -196,8 +197,6 @@ public class LockingTransaction {
             info = new Info(RUNNING, startPoint);
             TransactionalFuture f = new TransactionalFuture(this);
             futures.add(f);
-            assert TransactionalFuture.future.get() == f; // XXX
-            assert TransactionalFuture.future.get() == futures.get(0); // XXX
             assert futures.size() == 1;
 
             try {
@@ -211,7 +210,7 @@ public class LockingTransaction {
             }
             TransactionalFuture.future.remove();
             if (!finished) {
-                stop(RETRY); // XXX maybe we're calling this twice (if barged)
+                stop(RETRY);
             } else {
                 assert futures.size() == 1;
                 committed = futures.get(0).commit(this);

@@ -49,7 +49,8 @@ public class TransactionalFuture {
         return f;
     }
 
-    // Indicate future as having stopped.
+    // Indicate future as having stopped (with certain transaction state).
+    // OK to call twice (idempotent).
     void stop(int status) {
         running.set(false);
         // From now on, all operations on refs will throw STOPPED_EX.
