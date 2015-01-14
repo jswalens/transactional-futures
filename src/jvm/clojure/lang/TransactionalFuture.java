@@ -31,7 +31,7 @@ public class TransactionalFuture {
     }
 
     // Are we currently in a transactional future?
-    static public boolean isActive(){
+    static public boolean isActive() {
         return getCurrent() != null;
     }
 
@@ -42,7 +42,7 @@ public class TransactionalFuture {
     // getCurrent, but throw exception if no transaction is running.
     static TransactionalFuture getEx() {
         TransactionalFuture f = future.get();
-        if(f == null) {
+        if (f == null) {
             assert LockingTransaction.getCurrent() == null;
             throw new IllegalStateException("No transaction running");
         }
@@ -80,30 +80,30 @@ public class TransactionalFuture {
         final IFn fn;
         final ISeq args;
 
-        public CFn(IFn fn, ISeq args){
+        public CFn(IFn fn, ISeq args) {
             this.fn = fn;
             this.args = args;
         }
     }
 
-    public void enqueue(Agent.Action action){
+    public void enqueue(Agent.Action action) {
         actions.add(action);
     }
 
-    Object doGet(Ref ref){
-        if(!running.get())
+    Object doGet(Ref ref) {
+        if (!running.get())
             throw new StoppedEx();
-        if(vals.containsKey(ref))
+        if (vals.containsKey(ref))
             return vals.get(ref);
         try {
             ref.lockRead();
-            if(ref.tvals == null)
+            if (ref.tvals == null)
                 throw new IllegalStateException(ref.toString() + " is unbound.");
             Ref.TVal ver = ref.tvals;
             do {
-                if(ver.point <= tx.readPoint)
+                if (ver.point <= tx.readPoint)
                     return ver.val;
-            } while((ver = ver.prior) != ref.tvals);
+            } while ((ver = ver.prior) != ref.tvals);
         } finally {
             ref.unlockRead();
         }
@@ -112,12 +112,12 @@ public class TransactionalFuture {
         throw new LockingTransaction.RetryEx();
     }
 
-    Object doSet(Ref ref, Object val){
-        if(!running.get())
+    Object doSet(Ref ref, Object val) {
+        if (!running.get())
             throw new StoppedEx();
-        if(commutes.containsKey(ref))
+        if (commutes.containsKey(ref))
             throw new IllegalStateException("Can't set after commute");
-        if(!sets.contains(ref)) {
+        if (!sets.contains(ref)) {
             sets.add(ref);
             releaseIfEnsured(ref);
             ref.lockWrite(tx);
@@ -126,15 +126,15 @@ public class TransactionalFuture {
         return val;
     }
 
-    void doEnsure(Ref ref){
-        if(!running.get())
+    void doEnsure(Ref ref) {
+        if (!running.get())
             throw new StoppedEx();
-        if(ensures.contains(ref))
+        if (ensures.contains(ref))
             return;
         ref.lockRead();
 
         //someone completed a write after our snapshot
-        if(ref.tvals != null && ref.tvals.point > tx.readPoint) {
+        if (ref.tvals != null && ref.tvals.point > tx.readPoint) {
             ref.unlockRead();
             throw new LockingTransaction.RetryEx();
         }
@@ -142,10 +142,10 @@ public class TransactionalFuture {
         LockingTransaction.Info latestWriter = ref.latestWriter;
 
         //writer exists
-        if(latestWriter != null && latestWriter.running()) {
+        if (latestWriter != null && latestWriter.running()) {
             ref.unlockRead();
 
-            if(latestWriter != tx.info) { // not us, ensure is doomed
+            if (latestWriter != tx.info) { // not us, ensure is doomed
                 tx.blockAndBail(latestWriter);
             }
         } else {
@@ -154,9 +154,9 @@ public class TransactionalFuture {
     }
 
     Object doCommute(Ref ref, IFn fn, ISeq args) {
-        if(!running.get())
+        if (!running.get())
             throw new StoppedEx();
-        if(!vals.containsKey(ref)) {
+        if (!vals.containsKey(ref)) {
             Object val = null;
             try {
                 ref.lockRead();
@@ -167,7 +167,7 @@ public class TransactionalFuture {
             vals.put(ref, val);
         }
         ArrayList<CFn> fns = commutes.get(ref);
-        if(fns == null)
+        if (fns == null)
             commutes.put(ref, fns = new ArrayList<CFn>());
         fns.add(new CFn(fn, args));
         Object ret = fn.applyTo(RT.cons(vals.get(ref), args));
@@ -176,7 +176,7 @@ public class TransactionalFuture {
     }
 
     void releaseIfEnsured(Ref ref) {
-        if(ensures.contains(ref)) {
+        if (ensures.contains(ref)) {
             ensures.remove(ref);
             ref.unlockRead();
         }
@@ -203,7 +203,7 @@ public class TransactionalFuture {
             // make sure no one has killed us before this point, and can't from
             // now on
             if (tx.info.status.compareAndSet(LockingTransaction.RUNNING,
-                                             LockingTransaction.COMMITTING)) {
+                    LockingTransaction.COMMITTING)) {
                 for (Map.Entry<Ref, ArrayList<CFn>> e : commutes.entrySet()) {
                     Ref ref = e.getKey();
                     if (sets.contains(ref)) continue;
@@ -217,10 +217,10 @@ public class TransactionalFuture {
                         throw new LockingTransaction.RetryEx();
 
                     LockingTransaction.Info latest = ref.latestWriter;
-                    if(latest != null && latest != tx.info && latest.running()) {
+                    if (latest != null && latest != tx.info && latest.running()) {
                         boolean barged = tx.barge(latest);
                         // Try to barge other, if it didn't work retry this tx
-                        if(!barged)
+                        if (!barged)
                             throw new LockingTransaction.RetryEx();
                     }
                     Object val = ref.tvals == null ? null : ref.tvals.val;
