@@ -20,6 +20,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
     public static final int LOCK_WAIT_MSECS = 100;
 
+    // Each ref has a unique id, used to order them
+    static final AtomicLong ids = new AtomicLong();
+
     public int compareTo(Ref ref) {
         if (this.id == ref.id)
             return 0;
@@ -29,27 +32,11 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
             return 1;
     }
 
-    public int getMinHistory() {
-        return minHistory;
-    }
-
-    public Ref setMinHistory(int minHistory) {
-        this.minHistory = minHistory;
-        return this;
-    }
-
-    public int getMaxHistory() {
-        return maxHistory;
-    }
-
-    public Ref setMaxHistory(int maxHistory) {
-        this.maxHistory = maxHistory;
-        return this;
-    }
-
+    // Ref value and time point at which they were committed
     public static class TVal {
         Object val;
         long point;
+        // tvals form a circular list
         TVal prior;
         TVal next;
 
@@ -71,16 +58,21 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
 
     }
 
+
+    // Circular list of values and time point at which they were committed
     TVal tvals;
+    // Number of faults: gets were no recent-enough version could be found
     final AtomicInteger faults;
+    // Lock
     final ReentrantReadWriteLock lock;
-    LockingTransaction.Info latestWriter; // Latest transaction that has written to this ref
+    // Latest transaction that has written to this ref
+    LockingTransaction.Info latestWriter;
+    // Unique id
     final long id;
 
     volatile int minHistory = 0;
     volatile int maxHistory = 10;
 
-    static final AtomicLong ids = new AtomicLong();
 
     public Ref(Object initVal) {
         this(initVal, null);
@@ -95,6 +87,62 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
         id = ids.getAndIncrement();
     }
 
+
+    // Stuff for history, exposed through clojure.core.
+
+    public int getMinHistory() {
+        return minHistory;
+    }
+
+    public Ref setMinHistory(int minHistory) {
+        this.minHistory = minHistory;
+        return this;
+    }
+
+    public int getMaxHistory() {
+        return maxHistory;
+    }
+
+    public Ref setMaxHistory(int maxHistory) {
+        this.maxHistory = maxHistory;
+        return this;
+    }
+
+    public void trimHistory() {
+        try {
+            lock.writeLock().lock();
+            if (tvals != null) {
+                tvals.next = tvals;
+                tvals.prior = tvals;
+            }
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    public int getHistoryCount() {
+        try {
+            lock.writeLock().lock();
+            return histCount();
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    int histCount() {
+        if (tvals == null)
+            return 0;
+        else {
+            int count = 0;
+            for (TVal tv = tvals.next; tv != tvals; tv = tv.next)
+                count++;
+            return count;
+        }
+    }
+
+
+    // Acquire/release read/write lock
+
     void lockRead() {
         lock.readLock().lock();
     }
@@ -105,6 +153,15 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
 
     void unlockWrite() {
         lock.writeLock().unlock();
+    }
+
+    void tryWriteLock() {
+        try {
+            if (!lock.writeLock().tryLock(LOCK_WAIT_MSECS, TimeUnit.MILLISECONDS))
+                throw new LockingTransaction.RetryEx();
+        } catch (InterruptedException e) {
+            throw new LockingTransaction.RetryEx();
+        }
     }
 
     // Lock the ref for writing, for the given transaction.
@@ -142,14 +199,6 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
         }
     }
 
-    void tryWriteLock() {
-        try {
-            if (!lock.writeLock().tryLock(LOCK_WAIT_MSECS, TimeUnit.MILLISECONDS))
-                throw new LockingTransaction.RetryEx();
-        } catch (InterruptedException e) {
-            throw new LockingTransaction.RetryEx();
-        }
-    }
 
     // The latest value.
     // OK to call outside transaction.
@@ -188,6 +237,7 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
         TransactionalFuture.getEx().doEnsure(this);
     }
 
+    // Does the ref have a value?
     boolean isBound() {
         try {
             lock.readLock().lock();
@@ -197,38 +247,6 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
         }
     }
 
-
-    public void trimHistory() {
-        try {
-            lock.writeLock().lock();
-            if (tvals != null) {
-                tvals.next = tvals;
-                tvals.prior = tvals;
-            }
-        } finally {
-            lock.writeLock().unlock();
-        }
-    }
-
-    public int getHistoryCount() {
-        try {
-            lock.writeLock().lock();
-            return histCount();
-        } finally {
-            lock.writeLock().unlock();
-        }
-    }
-
-    int histCount() {
-        if (tvals == null)
-            return 0;
-        else {
-            int count = 0;
-            for (TVal tv = tvals.next; tv != tvals; tv = tv.next)
-                count++;
-            return count;
-        }
-    }
 
     final public IFn fn() {
         return (IFn) deref();
