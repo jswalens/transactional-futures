@@ -35,10 +35,13 @@ public class LockingTransaction {
     final static ThreadLocal<LockingTransaction> transaction = new ThreadLocal<LockingTransaction>();
 
 
+    // Retry transaction (on conflict).
     static class RetryEx extends Error {
     }
 
-    static final RetryEx RETRY_EX = new RetryEx();
+    // Transaction has stopped (due to barge).
+    static class StoppedEx extends Error {
+    }
 
     static class AbortException extends Exception {
     }
@@ -203,10 +206,10 @@ public class LockingTransaction {
                 ret = fn.call();
                 assert futures.size() == 1;
                 finished = true;
-            } catch (TransactionalFuture.StoppedEx ex) { // XXX can this happen?
-                // eat this, success will stay false
+            } catch (StoppedEx ex) {
+                // eat this, finished will stay false
             } catch (RetryEx ex) {
-                // eat this, success will stay false
+                // eat this, finished will stay false
             }
             TransactionalFuture.future.remove();
             if (!finished) {

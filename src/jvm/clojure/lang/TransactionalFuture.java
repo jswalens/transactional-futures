@@ -8,10 +8,6 @@ public class TransactionalFuture {
     final static ThreadLocal<TransactionalFuture> future = new ThreadLocal<TransactionalFuture>();
 
 
-    static class StoppedEx extends Error {
-    }
-
-
     final ArrayList<Agent.Action> actions = new ArrayList<Agent.Action>();
     final HashMap<Ref, Object> vals = new HashMap<Ref, Object>();
     final HashSet<Ref> sets = new HashSet<Ref>();
@@ -93,7 +89,7 @@ public class TransactionalFuture {
 
     Object doGet(Ref ref) {
         if (!running.get())
-            throw new StoppedEx();
+            throw new LockingTransaction.StoppedEx();
         if (vals.containsKey(ref))
             return vals.get(ref);
         try {
@@ -115,7 +111,7 @@ public class TransactionalFuture {
 
     Object doSet(Ref ref, Object val) {
         if (!running.get())
-            throw new StoppedEx();
+            throw new LockingTransaction.StoppedEx();
         if (commutes.containsKey(ref))
             throw new IllegalStateException("Can't set after commute");
         if (!sets.contains(ref)) {
@@ -129,7 +125,7 @@ public class TransactionalFuture {
 
     void doEnsure(Ref ref) {
         if (!running.get())
-            throw new StoppedEx();
+            throw new LockingTransaction.StoppedEx();
         if (ensures.contains(ref))
             return;
         ref.lockRead();
@@ -156,7 +152,7 @@ public class TransactionalFuture {
 
     Object doCommute(Ref ref, IFn fn, ISeq args) {
         if (!running.get())
-            throw new StoppedEx();
+            throw new LockingTransaction.StoppedEx();
         if (!vals.containsKey(ref)) {
             Object val = null;
             try {
@@ -196,7 +192,8 @@ public class TransactionalFuture {
     }
 
     boolean commit(LockingTransaction tx) {
-        // TODO: sanity check tx is running?
+        assert tx.isActive();
+
         boolean done = false;
         ArrayList<Ref> locked = new ArrayList<Ref>();
         ArrayList<Notify> notify = new ArrayList<Notify>();
@@ -268,8 +265,6 @@ public class TransactionalFuture {
                 done = true;
                 tx.info.status.set(LockingTransaction.COMMITTED);
             } // else: done stays false
-        } catch (StoppedEx ex) {
-            // eat this, done will stay false
         } catch (LockingTransaction.RetryEx ex) {
             // eat this, done will stay false
         } finally {
