@@ -11,6 +11,7 @@
 package clojure.lang;
 
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class TransactionalFuture {
@@ -53,8 +54,6 @@ public class TransactionalFuture {
     TransactionalFuture(LockingTransaction tx) {
         this.tx = tx;
         running.set(true);
-        assert future.get() == null;
-        future.set(this);
     }
 
 
@@ -78,6 +77,28 @@ public class TransactionalFuture {
             throw new IllegalStateException("No transaction running");
         }
         return f;
+    }
+
+
+    // Run fn in a future, in transaction tx.
+    // If we're already in a transaction, fails.
+    // Can throw RetryEx or StoppedEx.
+    static public Object runInFuture(LockingTransaction tx, Callable fn)
+    throws Exception, LockingTransaction.RetryEx, LockingTransaction.StoppedEx {
+        TransactionalFuture f = future.get();
+        if (f != null)
+            throw new IllegalStateException("Already in a future");
+
+        f = new TransactionalFuture(tx);
+        future.set(f);
+        tx.futures.add(f);
+        Object ret = null;
+        try {
+            ret = fn.call();
+        } finally {
+            future.remove();
+        }
+        return ret;
     }
 
 

@@ -212,12 +212,10 @@ public class LockingTransaction {
                 startTime = System.nanoTime();
             }
             info = new Info(RUNNING, startPoint);
-            TransactionalFuture f = new TransactionalFuture(this);
-            futures.add(f);
-            assert futures.size() == 1;
 
             try {
-                ret = fn.call();
+                assert futures.size() == 0;
+                ret = TransactionalFuture.runInFuture(this, fn);
                 assert futures.size() == 1;
                 finished = true;
             } catch (StoppedEx ex) {
@@ -225,7 +223,6 @@ public class LockingTransaction {
             } catch (RetryEx ex) {
                 // eat this, finished will stay false, and we'll retry
             }
-            TransactionalFuture.future.remove();
             if (!finished) {
                 stop(RETRY);
             } else {
