@@ -93,7 +93,7 @@ public class LockingTransaction {
 			}
 			info = null;
 			for (TransactionalFuture f : futures)
-				f.stop();
+				f.stop(status);
 			futures.clear();
 		}
 	}
@@ -121,12 +121,10 @@ public class LockingTransaction {
 	// then retry.
 	Object blockAndBail(LockingTransaction.Info other) {
 		stop(RETRY);
-		if (other != null) {
-			try {
-				other.latch.await(LOCK_WAIT_MSECS, TimeUnit.MILLISECONDS);
-			} catch (InterruptedException e) {
-				// ignore, retry immediately
-			}
+		try {
+			other.latch.await(LOCK_WAIT_MSECS, TimeUnit.MILLISECONDS);
+		} catch (InterruptedException e) {
+			// ignore, retry immediately
 		}
 		throw new RetryEx();
 	}

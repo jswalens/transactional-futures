@@ -50,16 +50,29 @@ public class TransactionalFuture {
     }
 
     // Indicate future as having stopped.
-    void stop() {
+    void stop(int status) {
         running.set(false);
         // From now on, all operations on refs will throw STOPPED_EX.
         vals.clear();
         sets.clear();
         commutes.clear();
-        //actions.clear();
-        // actions are sent after stop (see commit(): tx.stop() calls this
-        // function, but actions are only sent after that; so actions should be
-        // cleared there).
+        for (Ref r : ensures) {
+            r.unlockRead();
+        }
+        ensures.clear();
+        if (status == LockingTransaction.COMMITTED) {
+            try {
+                for (Agent.Action action : actions) {
+                    Agent.dispatchAction(action);
+                    // by now, TransactionFuture.future.get() is null, so
+                    // dispatches happen immediately
+                }
+            } finally {
+                actions.clear();
+            }
+        } else {
+            actions.clear();
+        }
     }
 
     // Commute function
@@ -163,8 +176,6 @@ public class TransactionalFuture {
     }
 
     void releaseIfEnsured(Ref ref) {
-        if(!running.get())
-            throw new StoppedEx();
         if(ensures.contains(ref)) {
             ensures.remove(ref);
             ref.unlockRead();
@@ -265,23 +276,15 @@ public class TransactionalFuture {
                 locked.get(k).unlockWrite();
             }
             locked.clear();
-            for (Ref r : ensures) {
-                r.unlockRead();
-            }
-            ensures.clear();
             tx.stop(done ? LockingTransaction.COMMITTED : LockingTransaction.RETRY);
             try {
                 if (done) { // re-dispatch out of transaction
                     for (Notify n : notify) {
                         n.ref.notifyWatches(n.oldval, n.newval);
                     }
-                    for (Agent.Action action : actions) {
-                        Agent.dispatchAction(action);
-                    }
                 }
             } finally {
                 notify.clear();
-                actions.clear();
             }
         }
         return done;
