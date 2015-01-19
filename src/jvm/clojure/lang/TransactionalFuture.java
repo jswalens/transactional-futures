@@ -48,12 +48,14 @@ public class TransactionalFuture implements Callable, Future {
     final Map<Ref, Object> vals = new HashMap<Ref, Object>();
     // Refs set in transaction. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
-    // Refs commuted, and list of commute functions.
+    // Refs commuted, and list of commute functions
     final Map<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
     // Ensured refs. All hold readLock.
     final Set<Ref> ensures = new HashSet<Ref>();
-    // Agent sends.
+    // Agent sends
     final List<Agent.Action> actions = new ArrayList<Agent.Action>();
+    // Futures, merged into this one
+    final Set<TransactionalFuture> merged = new HashSet<TransactionalFuture>();
 
     // Is transaction running?
     // Used to stop this future from elsewhere (e.g. for barge).
@@ -110,6 +112,36 @@ public class TransactionalFuture implements Callable, Future {
         return result;
     }
 
+    // Execute future (in this thread), and wait for all sub-futures to finish.
+    public Object callAndWait() throws Exception {
+        TransactionalFuture f = future.get();
+        if (f != null)
+            throw new IllegalStateException("Already in a future");
+
+        future.set(this);
+        tx.futures.add(this);
+
+        try {
+            // TODO: if(!running.get) throw StoppedEx;
+            result = fn.call();
+
+            // Wait for all futures to finish
+            int n = tx.futures.size();
+            do {
+                for (TransactionalFuture f_ : tx.futures) {
+                    if (f_ != this) // Don't merge into self
+                        f_.get();
+                }
+            } while (n != tx.futures.size());
+            // If in the mean time new futures were created, wait for them
+            // as well. No race condition because futures.size() won't
+            // change for sure after last get, and only increases.
+        } finally {
+            future.remove();
+        }
+        return result;
+    }
+
     // Execute future in another thread.
     public void spawn() {
         fut = Agent.soloExecutor.submit(this);
@@ -122,7 +154,10 @@ public class TransactionalFuture implements Callable, Future {
         if (tx == null) { // outside transaction
             return Agent.soloExecutor.submit(fn);
         } else { // inside transaction
+            TransactionalFuture current = TransactionalFuture.getCurrent();
             TransactionalFuture f = new TransactionalFuture(tx, fn);
+            f.vals.putAll(current.vals); // TODO: Possibly lots of copying here
+            // TODO: should the above happen here??
             f.spawn();
             return f;
         }
@@ -139,11 +174,21 @@ public class TransactionalFuture implements Callable, Future {
 
     // Waits if necessary for the computation to complete, and then retrieves
     // its result.
+    // Should only be called in another future.
     public Object get() throws ExecutionException, InterruptedException {
+        // Note: in future_a, we call future_b.get()
+        // => this = future_b; current = future_a
+        TransactionalFuture current = TransactionalFuture.getEx();
+
+        // Wait for other thread to finish
         if (fut != null)
-            return fut.get(); // TODO commit here?
-        else
-            return result; // TODO commit here??
+            fut.get(); // sets result
+        // else: result set by call() directly
+
+        // Merge into current
+        current.merge(this);
+
+        return result;
     }
 
     // Waits if necessary for at most the given time for the computation to
@@ -299,6 +344,39 @@ public class TransactionalFuture implements Callable, Future {
         actions.add(action);
     }
 
+    // Merge other future into current one
+    void merge(TransactionalFuture child) {
+        if (merged.contains(child))
+            return;
+
+        // vals: add in-transaction-value of refs SET in child to parent; refs
+        // READ in the child are ignored; if a ref is set both in child and
+        // parent, the child has priority
+        for (Ref r : child.sets) {
+            vals.put(r, child.vals.get(r));
+        }
+        // sets: add sets of child to parent
+        sets.addAll(child.sets);
+        // commutes: add commutes of child to parent
+        // order doesn't matter because they're commutative
+        for (Map.Entry<Ref, ArrayList<CFn>> c : child.commutes.entrySet()) {
+            ArrayList<CFn> fns = commutes.get(c.getKey());
+            if (fns == null) {
+                commutes.put(c.getKey(), fns = new ArrayList<CFn>());
+            }
+            fns.addAll(c.getValue());
+        }
+        // ensures: add ensures of child to parent
+        ensures.addAll(child.ensures);
+        // actions: add actions of child to parent
+        // They are added AFTER the ones of the current future, in the order
+        // they were in in the child
+        actions.addAll(child.actions);
+        // merged: add futures merged into child to futures merged into parent
+        merged.addAll(child.merged);
+
+        merged.add(child);
+    }
 
     // Notify watches
     private static class Notify {

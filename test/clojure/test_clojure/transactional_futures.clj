@@ -17,9 +17,19 @@
   (dotimes [i 50]
     (let [r1 (ref 0)]
       (dosync
+        (is (= 0 @r1))
         (alter r1 inc)
-        (is (= :abc (deref (future (alter r1 inc) :abc))))
-        (alter r1 inc))
+        (is (= 1 @r1))
+        (is (= :abc
+          (deref
+            (future
+              (is (= 1 @r1))
+              (alter r1 inc)
+              (is (= 2 @r1))
+              :abc))))
+        (is (= 2 @r1))
+        (alter r1 inc)
+        (is (= 3 @r1)))
       (is (= 3 (deref r1))))))
 
 (deftest concurrent-alter

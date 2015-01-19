@@ -214,22 +214,12 @@ public class LockingTransaction {
             }
             info = new Info(RUNNING, startPoint);
 
+            TransactionalFuture f_main = null;
             try {
                 assert futures.size() == 0;
 
-                TransactionalFuture f_main = new TransactionalFuture(this, fn);
-                result = f_main.call();
-
-                // Wait for all futures to finish
-                int n = futures.size();
-                do {
-                    for (TransactionalFuture f : futures) {
-                        f.get();
-                    }
-                } while (n != futures.size());
-                // If in the mean time new futures were created, wait for them
-                // as well. No race condition because futures.size() won't
-                // change for sure after last get, and only increases.
+                f_main = new TransactionalFuture(this, fn);
+                result = f_main.callAndWait();
 
                 finished = true;
             } catch (StoppedEx ex) {
@@ -240,7 +230,7 @@ public class LockingTransaction {
             if (!finished) {
                 stop(RETRY);
             } else {
-                committed = futures.get(0).commit(this);
+                committed = f_main.commit(this);
             }
         }
         if (!committed)
