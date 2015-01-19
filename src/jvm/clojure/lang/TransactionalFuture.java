@@ -11,10 +11,10 @@
 package clojure.lang;
 
 import java.util.*;
-import java.util.concurrent.Callable;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class TransactionalFuture {
+public class TransactionalFuture implements Callable, Future {
 
     // Commute function
     static class CFn {
@@ -35,6 +35,15 @@ public class TransactionalFuture {
     // Transaction for this future
     final LockingTransaction tx;
 
+    // Java Future executing this future.
+    // null if executing in main thread.
+    Future fut = null;
+
+    // Function executed in this future
+    final Callable fn;
+    // Result of future (return value of fn)
+    Object result;
+
     // In transaction values of refs (both read and written)
     final Map<Ref, Object> vals = new HashMap<Ref, Object>();
     // Refs set in transaction. (Their value is in vals.)
@@ -48,11 +57,14 @@ public class TransactionalFuture {
 
     // Is transaction running?
     // Used to stop this future from elsewhere (e.g. for barge).
+    // TODO: if one future should stop running, all of them should stop and the
+    // transaction should stop => move this to LockingTransaction.
     final AtomicBoolean running = new AtomicBoolean(false);
 
 
-    TransactionalFuture(LockingTransaction tx) {
+    TransactionalFuture(LockingTransaction tx, Callable fn) {
         this.tx = tx;
+        this.fn = fn;
         running.set(true);
     }
 
@@ -80,25 +92,84 @@ public class TransactionalFuture {
     }
 
 
-    // Run fn in a future, in transaction tx.
-    // If we're already in a transaction, fails.
-    // Can throw RetryEx or StoppedEx.
-    static public Object runInFuture(LockingTransaction tx, Callable fn)
-    throws Exception, LockingTransaction.RetryEx, LockingTransaction.StoppedEx {
+    // Execute future (in this thread).
+    public Object call() throws Exception {
         TransactionalFuture f = future.get();
         if (f != null)
             throw new IllegalStateException("Already in a future");
 
-        f = new TransactionalFuture(tx);
-        future.set(f);
-        tx.futures.add(f);
-        Object ret = null;
+        future.set(this);
+        tx.futures.add(this);
+
         try {
-            ret = fn.call();
+            // TODO: if(!running.get) throw StoppedEx;
+            result = fn.call();
         } finally {
             future.remove();
         }
-        return ret;
+        return result;
+    }
+
+    // Execute future in another thread.
+    public void spawn() {
+        fut = Agent.soloExecutor.submit(this);
+    }
+
+    // Spawn future: outside transaction regular future, in transactional a
+    // transactional future.
+    static public Future spawnFuture(Callable fn) {
+        LockingTransaction tx = LockingTransaction.getCurrent();
+        if (tx == null) { // outside transaction
+            return Agent.soloExecutor.submit(fn);
+        } else { // inside transaction
+            TransactionalFuture f = new TransactionalFuture(tx, fn);
+            f.spawn();
+            return f;
+        }
+    }
+
+
+    // Attempts to cancel execution of this task.
+    public boolean cancel(boolean mayInterruptIfRunning) {
+        if (fut != null)
+            return fut.cancel(mayInterruptIfRunning);
+        else
+            return false;
+    }
+
+    // Waits if necessary for the computation to complete, and then retrieves
+    // its result.
+    public Object get() throws ExecutionException, InterruptedException {
+        if (fut != null)
+            return fut.get(); // TODO commit here?
+        else
+            return result; // TODO commit here??
+    }
+
+    // Waits if necessary for at most the given time for the computation to
+    // complete, and then retrieves its result, if available.
+    public Object get(long timeout, TimeUnit unit) throws InterruptedException,
+    ExecutionException, TimeoutException {
+        if (fut != null)
+            return fut.get(timeout, unit);
+        else
+            return result;
+    }
+
+    // Returns true if this task was cancelled before it completed normally.
+    public boolean isCancelled() {
+        if (fut != null)
+            return fut.isCancelled();
+        else
+            return false;
+    }
+
+    // Returns true if this task completed.
+    public boolean isDone() {
+        if (fut != null)
+            return fut.isCancelled();
+        else
+            return result != null; // XXX could also mean the result was actually null?
     }
 
 

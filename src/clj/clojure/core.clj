@@ -6414,8 +6414,8 @@
    :static true}
   [f]
   (let [f (binding-conveyor-fn f)
-        fut (.submit clojure.lang.Agent/soloExecutor ^Callable f)]
-    (reify 
+        fut (clojure.lang.TransactionalFuture/spawnFuture ^Callable f)]
+    (reify
      clojure.lang.IDeref 
      (deref [_] (deref-future fut))
      clojure.lang.IBlockingDeref

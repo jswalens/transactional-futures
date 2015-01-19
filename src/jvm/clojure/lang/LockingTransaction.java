@@ -89,6 +89,7 @@ public class LockingTransaction {
     // Time point at which current attempt of transaction started.
     long readPoint;
     // Futures created in transaction.
+    // XXX this should probably be atomic? different threads modify it
     List<TransactionalFuture> futures = new ArrayList<TransactionalFuture>();
 
 
@@ -199,7 +200,7 @@ public class LockingTransaction {
     // Run fn in transaction.
     Object run(Callable fn) throws Exception {
         boolean committed = false;
-        Object ret = null;
+        Object result = null;
 
         assert transaction.get() == this;
 
@@ -215,8 +216,21 @@ public class LockingTransaction {
 
             try {
                 assert futures.size() == 0;
-                ret = TransactionalFuture.runInFuture(this, fn);
-                assert futures.size() == 1;
+
+                TransactionalFuture f_main = new TransactionalFuture(this, fn);
+                result = f_main.call();
+
+                // Wait for all futures to finish
+                int n = futures.size();
+                do {
+                    for (TransactionalFuture f : futures) {
+                        f.get();
+                    }
+                } while (n != futures.size());
+                // If in the mean time new futures were created, wait for them
+                // as well. No race condition because futures.size() won't
+                // change for sure after last get, and only increases.
+
                 finished = true;
             } catch (StoppedEx ex) {
                 // eat this, finished will stay false, and we'll retry
@@ -226,13 +240,12 @@ public class LockingTransaction {
             if (!finished) {
                 stop(RETRY);
             } else {
-                assert futures.size() == 1;
                 committed = futures.get(0).commit(this);
             }
         }
         if (!committed)
             throw Util.runtimeException("Transaction failed after reaching retry limit");
-        return ret;
+        return result;
     }
 
 }
