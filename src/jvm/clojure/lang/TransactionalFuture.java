@@ -67,6 +67,7 @@ public class TransactionalFuture implements Callable, Future {
     TransactionalFuture(LockingTransaction tx, Callable fn) {
         this.tx = tx;
         this.fn = fn;
+        tx.futures.add(this);
         running.set(true);
     }
 
@@ -101,7 +102,6 @@ public class TransactionalFuture implements Callable, Future {
             throw new IllegalStateException("Already in a future");
 
         future.set(this);
-        tx.futures.add(this);
 
         try {
             // TODO: if(!running.get) throw StoppedEx;
@@ -119,15 +119,15 @@ public class TransactionalFuture implements Callable, Future {
             throw new IllegalStateException("Already in a future");
 
         future.set(this);
-        tx.futures.add(this);
 
         try {
             // TODO: if(!running.get) throw StoppedEx;
             result = fn.call();
 
             // Wait for all futures to finish
-            int n = tx.futures.size();
+            int n;
             do {
+                n = tx.futures.size();
                 for (TransactionalFuture f_ : tx.futures) {
                     if (f_ != this) // Don't merge into self
                         f_.get();
@@ -155,6 +155,8 @@ public class TransactionalFuture implements Callable, Future {
             return Agent.soloExecutor.submit(fn);
         } else { // inside transaction
             TransactionalFuture current = TransactionalFuture.getCurrent();
+            if (!current.running.get())
+                throw new LockingTransaction.StoppedEx(); // XXX
             TransactionalFuture f = new TransactionalFuture(tx, fn);
             f.vals.putAll(current.vals); // TODO: Possibly lots of copying here
             // TODO: should the above happen here??

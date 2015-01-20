@@ -89,8 +89,8 @@ public class LockingTransaction {
     // Time point at which current attempt of transaction started.
     long readPoint;
     // Futures created in transaction.
-    // XXX this should probably be atomic? different threads modify it
-    List<TransactionalFuture> futures = new ArrayList<TransactionalFuture>();
+    Set<TransactionalFuture> futures = Collections.synchronizedSet(
+            new HashSet<TransactionalFuture>());
 
 
     // Is this thread in a transaction?
@@ -128,8 +128,24 @@ public class LockingTransaction {
             }
             info = null;
         }
-        for (TransactionalFuture f : futures)
-            f.stop(status);
+        int n;
+        do {
+            n = futures.size();
+            for (TransactionalFuture f_ : futures) {
+                f_.stop(status);
+            }
+            for (TransactionalFuture f_ : futures) {
+                try {
+                    f_.get(); // XXX
+                    // Should stop 'soon' with StoppedEx
+                } catch (Exception e) {
+                }
+            }
+        } while (n != futures.size());
+        // If in the mean time new futures were created, stop them as well.
+        // No race conditions because 1) get and stop are idempotent; 2) futures
+        // only grows, never shrinks; 3) after all gets have returned, futures
+        // won't change anymore.
         futures.clear();
     }
 
@@ -216,11 +232,8 @@ public class LockingTransaction {
 
             TransactionalFuture f_main = null;
             try {
-                assert futures.size() == 0;
-
                 f_main = new TransactionalFuture(this, fn);
                 result = f_main.callAndWait();
-
                 finished = true;
             } catch (StoppedEx ex) {
                 // eat this, finished will stay false, and we'll retry
