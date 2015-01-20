@@ -189,8 +189,6 @@ public class LockingTransaction {
         Object result = null;
 
         for (int i = 0; !committed && i < RETRY_LIMIT; i++) {
-            boolean finished = false;
-
             readPoint = lastPoint.incrementAndGet();
             if (i == 0) {
                 startPoint = readPoint;
@@ -199,6 +197,7 @@ public class LockingTransaction {
             info = new Info(RUNNING, startPoint);
 
             TransactionalFuture f_main = null;
+            boolean finished = false;
             try {
                 f_main = new TransactionalFuture(this, null, fn);
                 result = f_main.callAndWait();
@@ -212,11 +211,12 @@ public class LockingTransaction {
                 // eat this, finished will stay false, and we'll retry
             } catch (RetryEx ex) {
                 // eat this, finished will stay false, and we'll retry
-            }
-            if (!finished) {
-                stop(RETRY); // XXX Should this be in finally?
-            } else {
-                committed = f_main.commit(this);
+            } finally {
+                if (!finished) {
+                    stop(RETRY);
+                } else {
+                    committed = f_main.commit(this);
+                }
             }
         }
         if (!committed)
