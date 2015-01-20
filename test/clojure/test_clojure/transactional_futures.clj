@@ -154,3 +154,191 @@
       (dosync
         (future (Thread/sleep 10) (ref-set r1 1)))
       (is (= 1 (deref r1)))))) ; no conflict
+
+; === STRUCTURED ===
+
+(deftest none
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10))
+      (is (= 11 (deref r1))))))
+
+(deftest one-rr
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (is (= 11 (deref r1))))]
+          (is (= 11 (deref r1)))
+          (deref f)
+          (is (= 11 (deref r1)))))
+      (is (= 11 (deref r1))))))
+
+(deftest one-rw
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (is (= 11 (deref r1))))]
+          (alter r1 + 10)
+          (is (= 21 (deref r1)))
+          (deref f)
+          (is (= 21 (deref r1)))))
+      (is (= 21 (deref r1))))))
+
+(deftest one-wr
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (alter r1 + 10)
+                  (is (= 21 (deref r1))))]
+          (is (= 11 (deref r1)))
+          (deref f)
+          (is (= 21 (deref r1)))))
+      (is (= 21 (deref r1))))))
+
+(deftest one-ww
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (alter r1 + 10)
+                  (is (= 21 (deref r1))))]
+          (alter r1 + 20)
+          (is (= 31 (deref r1)))
+          (deref f)
+          (is (= 21 (deref r1)))))
+      (is (= 21 (deref r1))))))
+
+(deftest two-depth-nested
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (alter r1 + 10)
+                  (is (= 21 (deref r1)))
+                  (let [g (future
+                            (alter r1 + 20)
+                            (is (= 41 (deref r1))))]
+                    (alter r1 + 30)
+                    (is (= 51 (deref r1)))
+                    (deref g)
+                    (is (= 41 (deref r1)))))]
+          (alter r1 + 40)
+          (is (= 51 (deref r1)))
+          (deref f)
+          (is (= 41 (deref r1)))))
+      (is (= 41 (deref r1))))))
+
+(deftest two-breadth-separate
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (alter r1 + 20)
+                  (is (= 31 (deref r1))))
+              g (future
+                  (alter r1 + 30)
+                  (is (= 41 (deref r1))))]
+          (alter r1 + 40)
+          (is (= 51 (deref r1)))
+          (deref f)
+          (is (= 31 (deref r1)))
+          (deref g)
+          (is (= 41 (deref r1)))))
+      (is (= 41 (deref r1))))))
+
+(deftest two-breadth-co-deref
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (let [f (future
+                  (is (= 11 (deref r1)))
+                  (alter r1 + 20)
+                  (is (= 31 (deref r1))))
+              _ (alter r1 + 30) ; => r1 = 41
+              g (future
+                  (is (= 41 (deref r1)))
+                  (alter r1 + 40)
+                  (is (= 81 (deref r1)))
+                  (deref f)
+                  (is (= 31 (deref r1))))]
+          (is (= 41 (deref r1)))
+          (alter r1 + 50)
+          (is (= 91 (deref r1)))
+          (deref g)
+          (is (= 31 (deref r1)))))
+      (is (= 31 (deref r1))))))
+
+(deftest three-breadth-two-co-deref-no-conflicts
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (is (= 11 (deref r1)))
+        (let [f (future
+                  (is (= 11 (deref r1)))
+                  (alter r1 + 20)
+                  (is (= 31 (deref r1))))
+              g (future
+                  (is (= 11 (deref r1)))
+                  (deref f)  ; first deref of f
+                  (is (= 31 (deref r1))))
+              h (future
+                  (is (= 11 (deref r1)))
+                  (deref f)  ; second deref of f
+                  (is (= 31 (deref r1))))]
+          (is (= 11 (deref r1)))
+          (deref g)
+          (is (= 31 (deref r1)))
+          (deref h)
+          (is (= 31 (deref r1)))))
+      (is (= 31 (deref r1))))))
+
+(deftest three-breadth-two-co-deref-conflicts
+  (dotimes [i 50]
+    (let [r1 (ref 1)]
+      (dosync
+        (alter r1 + 10)
+        (is (= 11 (deref r1)))
+        (let [f (future
+                  (is (= 11 (deref r1)))
+                  (alter r1 + 20)
+                  (is (= 31 (deref r1))))
+              _ (do
+                  (is (= 11 (deref r1)))
+                  (alter r1 + 30)
+                  (is (= 41 (deref r1))))
+              g (future
+                  (is (= 41 (deref r1)))
+                  (alter r1 + 40)
+                  (is (= 81 (deref r1)))
+                  (deref f)  ; first deref of f
+                  (is (= 31 (deref r1))))
+              _ (do
+                  (is (= 41 (deref r1)))
+                  (alter r1 + 50)
+                  (is (= 91 (deref r1))))
+              h (future
+                  (is (= 91 (deref r1)))
+                  (alter r1 + 60)
+                  (is (= 151 (deref r1)))
+                  (deref f)  ; second deref of f
+                  (is (= 31 (deref r1))))]
+          (is (= 91 (deref r1)))
+          (alter r1 + 70)
+          (is (= 161 (deref r1)))
+          (deref g)
+          (is (= 31 (deref r1)))
+          (deref h)
+          (is (= 31 (deref r1)))))
+      (is (= 31 (deref r1))))))
