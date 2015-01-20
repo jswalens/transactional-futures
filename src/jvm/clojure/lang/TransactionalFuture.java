@@ -72,7 +72,7 @@ public class TransactionalFuture implements Callable, Future {
     }
 
 
-    // Is this thread in a future?
+    // Is this thread in a transactional future?
     static public boolean isActive() {
         return getCurrent() != null;
     }
@@ -87,8 +87,6 @@ public class TransactionalFuture implements Callable, Future {
     static TransactionalFuture getEx() {
         TransactionalFuture f = future.get();
         if (f == null) {
-            // no future should => no transaction
-            assert LockingTransaction.getCurrent() == null;
             throw new IllegalStateException("No transaction running");
         }
         return f;
@@ -150,14 +148,13 @@ public class TransactionalFuture implements Callable, Future {
     // Spawn future: outside transaction regular future, in transactional a
     // transactional future.
     static public Future spawnFuture(Callable fn) {
-        LockingTransaction tx = LockingTransaction.getCurrent();
-        if (tx == null) { // outside transaction
+        TransactionalFuture current = TransactionalFuture.getCurrent();
+        if (current == null) { // outside transaction
             return Agent.soloExecutor.submit(fn);
         } else { // inside transaction
-            TransactionalFuture current = TransactionalFuture.getCurrent();
             if (!current.running.get())
                 throw new LockingTransaction.StoppedEx(); // XXX
-            TransactionalFuture f = new TransactionalFuture(tx, fn);
+            TransactionalFuture f = new TransactionalFuture(current.tx, fn);
             f.vals.putAll(current.vals); // TODO: Possibly lots of copying here
             // TODO: should the above happen here??
             f.spawn();
@@ -395,8 +392,6 @@ public class TransactionalFuture implements Callable, Future {
 
     // Commit
     boolean commit(LockingTransaction tx) {
-        assert tx.isActive();
-
         boolean done = false;
         ArrayList<Ref> locked = new ArrayList<Ref>(); // write locks
         ArrayList<Notify> notify = new ArrayList<Notify>();

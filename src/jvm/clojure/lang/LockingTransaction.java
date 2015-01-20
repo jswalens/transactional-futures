@@ -33,10 +33,6 @@ public class LockingTransaction {
     static final int COMMITTED = 4;
 
 
-    // Transaction running in current thread (can be null)
-    final static ThreadLocal<LockingTransaction> transaction = new ThreadLocal<LockingTransaction>();
-
-
     // Retry transaction (on conflict)
     static class RetryEx extends Error {
     }
@@ -91,29 +87,6 @@ public class LockingTransaction {
     // Futures created in transaction.
     Set<TransactionalFuture> futures = Collections.synchronizedSet(
             new HashSet<TransactionalFuture>());
-
-
-    // Is this thread in a transaction?
-    static public boolean isActive() {
-        return getCurrent() != null;
-    }
-
-    // Get this thread's transaction (possibly null).
-    static LockingTransaction getCurrent() {
-        LockingTransaction t = transaction.get();
-        if (t == null || t.info == null)
-            return null;
-        return t;
-    }
-
-    // Get this thread's transaction. Throws exception if no transaction is
-    // running.
-    static LockingTransaction getEx() {
-        LockingTransaction t = transaction.get();
-        if (t == null || t.info == null)
-            throw new IllegalStateException("No transaction running");
-        return t;
-    }
 
 
     // Indicate transaction as having stopped (with certain state).
@@ -192,33 +165,23 @@ public class LockingTransaction {
     // Run fn in a transaction.
     // If we're already in a transaction, use that one, else creates one.
     static public Object runInTransaction(Callable fn) throws Exception {
-        LockingTransaction t = transaction.get();
-        Object ret;
-        if (t == null) { // No transaction running: create one
-            t = new LockingTransaction();
-            transaction.set(t);
-            try {
-                ret = t.run(fn);
-            } finally {
-                transaction.remove();
-            }
+        TransactionalFuture f = TransactionalFuture.getCurrent();
+        if (f == null) { // No transaction running: create one
+            LockingTransaction t = new LockingTransaction();
+            return t.run(fn);
         } else { // Transaction exists
-            if (t.info != null) { // Transaction in transaction: simply call fn
-                ret = fn.call();
-            } else {
-                ret = t.run(fn);
+            if (f.tx.info != null) { // Transaction in transaction: simply call fn
+                return fn.call();
+            } else { // XXX I'm not sure when this happens?
+                return f.tx.run(fn);
             }
         }
-
-        return ret;
     }
 
     // Run fn in transaction.
     Object run(Callable fn) throws Exception {
         boolean committed = false;
         Object result = null;
-
-        assert transaction.get() == this;
 
         for (int i = 0; !committed && i < RETRY_LIMIT; i++) {
             boolean finished = false;
