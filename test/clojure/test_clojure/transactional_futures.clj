@@ -8,8 +8,7 @@
 
 
 (ns clojure.test-clojure.transactional-futures
-  (:use clojure.test)
-  (:import (java.util.concurrent Executors)))
+  (:use clojure.test))
 
 ; === SIMPLE ===
 
