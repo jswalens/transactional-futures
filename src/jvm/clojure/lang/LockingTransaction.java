@@ -195,7 +195,7 @@ public class LockingTransaction {
 
             TransactionalFuture f_main = null;
             try {
-                f_main = new TransactionalFuture(this, fn);
+                f_main = new TransactionalFuture(this, null, fn);
                 result = f_main.callAndWait();
                 finished = true;
             } catch (StoppedEx ex) {

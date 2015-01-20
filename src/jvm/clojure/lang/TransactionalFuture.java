@@ -64,9 +64,12 @@ public class TransactionalFuture implements Callable, Future {
     final AtomicBoolean running = new AtomicBoolean(false);
 
 
-    TransactionalFuture(LockingTransaction tx, Callable fn) {
+    TransactionalFuture(LockingTransaction tx, Map<Ref, Object> parent_vals,
+        Callable fn) {
         this.tx = tx;
         this.fn = fn;
+        if (parent_vals != null)
+            vals.putAll(parent_vals); // TODO: Possibly lots of copying here
         tx.futures.add(this);
         running.set(true);
     }
@@ -154,9 +157,8 @@ public class TransactionalFuture implements Callable, Future {
         } else { // inside transaction
             if (!current.running.get())
                 throw new LockingTransaction.StoppedEx(); // XXX
-            TransactionalFuture f = new TransactionalFuture(current.tx, fn);
-            f.vals.putAll(current.vals); // TODO: Possibly lots of copying here
-            // TODO: should the above happen here??
+            TransactionalFuture f = new TransactionalFuture(current.tx,
+                current.vals, fn);
             f.spawn();
             return f;
         }
