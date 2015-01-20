@@ -11,6 +11,7 @@
 package clojure.lang;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.Callable;
@@ -109,8 +110,9 @@ public class LockingTransaction {
             }
             for (TransactionalFuture f_ : futures) {
                 try {
-                    f_.get(); // XXX
-                    // Should stop 'soon' with StoppedEx
+                    f_.get();
+                    // Should stop 'soon' with ExecutionException wrapping
+                    // StoppedEx
                 } catch (Exception e) {
                 }
             }
@@ -201,13 +203,18 @@ public class LockingTransaction {
                 f_main = new TransactionalFuture(this, null, fn);
                 result = f_main.callAndWait();
                 finished = true;
+            } catch (ExecutionException ex) {
+                // exception in embedded future => retry
+                // XXX should we check whether the cause was a StoppedEx or
+                // RetryEx? And what if the cause was another ExecutionException
+                // wrapping one of these?
             } catch (StoppedEx ex) {
                 // eat this, finished will stay false, and we'll retry
             } catch (RetryEx ex) {
                 // eat this, finished will stay false, and we'll retry
             }
             if (!finished) {
-                stop(RETRY);
+                stop(RETRY); // XXX Should this be in finally?
             } else {
                 committed = f_main.commit(this);
             }

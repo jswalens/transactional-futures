@@ -102,10 +102,10 @@ public class TransactionalFuture implements Callable, Future {
         if (f != null)
             throw new IllegalStateException("Already in a future");
 
-        future.set(this);
-
         try {
-            // TODO: if(!running.get) throw StoppedEx;
+            future.set(this);
+            if(!running.get())
+                throw new LockingTransaction.StoppedEx();
             result = fn.call();
         } finally {
             future.remove();
@@ -114,15 +114,17 @@ public class TransactionalFuture implements Callable, Future {
     }
 
     // Execute future (in this thread), and wait for all sub-futures to finish.
+    // This will throw an ExecutionException if an inner future threw an
+    // exception (e.g. StoppedEx or RetryEx).
     public Object callAndWait() throws Exception {
         TransactionalFuture f = future.get();
         if (f != null)
             throw new IllegalStateException("Already in a future");
 
-        future.set(this);
-
         try {
-            // TODO: if(!running.get) throw StoppedEx;
+            future.set(this);
+            if(!running.get())
+                throw new LockingTransaction.StoppedEx();
             result = fn.call();
 
             // Wait for all futures to finish
@@ -156,7 +158,7 @@ public class TransactionalFuture implements Callable, Future {
             return Agent.soloExecutor.submit(fn);
         } else { // inside transaction
             if (!current.running.get())
-                throw new LockingTransaction.StoppedEx(); // XXX
+                throw new LockingTransaction.StoppedEx();
             TransactionalFuture f = new TransactionalFuture(current.tx,
                 current.vals, fn);
             f.spawn();
@@ -176,6 +178,8 @@ public class TransactionalFuture implements Callable, Future {
     // Waits if necessary for the computation to complete, and then retrieves
     // its result.
     // Should only be called in another future.
+    // Throws ExecutionException if an exception occurred in the future. (This
+    // might be a RetryEx or a StoppedEx!)
     public Object get() throws ExecutionException, InterruptedException {
         // Note: in future_a, we call future_b.get()
         // => this = future_b; current = future_a
