@@ -173,6 +173,9 @@ public class LockingTransaction {
             if (f.tx.info != null) { // Transaction in transaction: simply call fn
                 return fn.call();
             } else { // XXX I'm not sure when this happens?
+                // XXX This might actually be incorrect: what if a transaction
+                // is stopped (through barging) right before an inner dosync
+                // gets called?
                 return f.tx.run(fn);
             }
         }
