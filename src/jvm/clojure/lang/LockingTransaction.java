@@ -56,7 +56,7 @@ public class LockingTransaction {
     public static class Info {
         // Transaction state (RUNNING, COMMITTING, RETRY...)
         final AtomicInteger status;
-        // Time point at which transaction started.
+        // Time point at which transaction first started.
         final long startPoint;
         // Latch, starts at 1 and counts down when transaction stops
         // (successfully or not). Await on this to wait until a transaction has
