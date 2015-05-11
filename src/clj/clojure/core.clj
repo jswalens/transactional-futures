@@ -2173,6 +2173,8 @@
       (.setMaxHistory r (:max-history opts)))
     (when (:min-history opts)
       (.setMinHistory r (:min-history opts)))
+    (when (:resolve opts)
+      (.setResolve r (:resolve opts)))
     r)))
 
 (defn ^:private deref-future

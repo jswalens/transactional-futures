@@ -369,10 +369,23 @@ public class TransactionalFuture implements Callable, Future {
             return;
 
         // vals: add in-transaction-value of refs SET in child to parent; refs
-        // READ in the child are ignored; if a ref is set both in child and
-        // parent, the child has priority
+        // READ in the child are ignored. Call custom resolve function if
+        // present and ref was set in parent since creation.
         for (Ref r : child.sets) {
-            vals.put(r, child.vals.get(r));
+            Object v_original = child.snapshot.get(r);
+            Object v_child = child.vals.get(r);
+            Object v_parent = vals.get(r);
+            if (v_parent == v_original) { // no conflict, just take over value
+                vals.put(r, v_child);
+            } else { // conflict
+                if (r.getResolve() != null) {
+                    IFn resolve = r.getResolve();
+                    Object v = resolve.invoke(v_original, v_parent, v_child);
+                    vals.put(r, v);
+                } else {
+                    vals.put(r, v_child);
+                }
+            }
         }
         // sets: add sets of child to parent
         sets.addAll(child.sets);

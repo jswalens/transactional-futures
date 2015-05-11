@@ -70,6 +70,7 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
     // Unique id
     final long id;
 
+    volatile IFn resolve = null;
     volatile int minHistory = 0;
     volatile int maxHistory = 10;
 
@@ -87,6 +88,17 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
         id = ids.getAndIncrement();
     }
 
+
+    // Custom resolve function, set in clojure.core.
+
+    public IFn getResolve() {
+        return resolve;
+    }
+
+    public Ref setResolve(IFn resolve) {
+        this.resolve = resolve;
+        return this;
+    }
 
     // Stuff for history, exposed through clojure.core.
 
