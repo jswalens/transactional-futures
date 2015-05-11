@@ -46,8 +46,11 @@ public class TransactionalFuture implements Callable, Future {
 
     // In transaction values of refs (both read and written)
     final Map<Ref, Object> vals = new HashMap<Ref, Object>();
-    // Refs set in transaction. (Their value is in vals.)
+    // Refs set in this future. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
+    // Snapshot: in transaction values of modified refs at the moment of
+    // creation of this future (set in any ancestor)
+    final Map<Ref, Object> snapshot = new HashMap<Ref, Object>();
     // Refs commuted, and list of commute functions
     final Map<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
     // Ensured refs. All hold readLock.
@@ -64,12 +67,23 @@ public class TransactionalFuture implements Callable, Future {
     final AtomicBoolean running = new AtomicBoolean(false);
 
 
-    TransactionalFuture(LockingTransaction tx, Map<Ref, Object> parent_vals,
+    TransactionalFuture(LockingTransaction tx, TransactionalFuture parent,
         Callable fn) {
         this.tx = tx;
         this.fn = fn;
-        if (parent_vals != null)
-            vals.putAll(parent_vals); // TODO: Possibly lots of copying here
+
+        // Initialize vals to parent vals
+        if (parent != null && parent.vals != null)
+            vals.putAll(parent.vals); // TODO: Possibly lots of copying here
+        // Set snapshot
+        if (parent != null) {
+            // 1. Copy snapshot of parent
+            snapshot.putAll(parent.snapshot); // TODO: lots of copying, needed?
+            // 2. Add sets from parent
+            for (Ref r : parent.sets)
+                snapshot.put(r, parent.vals.get(r));
+        }
+
         tx.futures.add(this);
         running.set(true);
     }
@@ -159,8 +173,8 @@ public class TransactionalFuture implements Callable, Future {
         } else { // inside transaction
             if (!current.running.get())
                 throw new LockingTransaction.StoppedEx();
-            TransactionalFuture f = new TransactionalFuture(current.tx,
-                current.vals, fn);
+            TransactionalFuture f = new TransactionalFuture(current.tx, current,
+                fn);
             f.spawn();
             return f;
         }
