@@ -372,9 +372,9 @@ public class TransactionalFuture implements Callable, Future {
         // READ in the child are ignored. Call custom resolve function if
         // present and ref was set in parent since creation.
         for (Ref r : child.sets) {
-            Object v_original = child.snapshot.get(r);
-            Object v_child = child.vals.get(r);
-            Object v_parent = vals.get(r);
+            Object v_child = child.vals.get(r); // always exists
+            Object v_original = child.snapshot.get(r); // FIXME: might not exist
+            Object v_parent = vals.get(r); // FIXME: might not exist
             if (v_parent == v_original) { // no conflict, just take over value
                 vals.put(r, v_child);
             } else { // conflict
