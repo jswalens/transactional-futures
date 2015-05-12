@@ -390,12 +390,12 @@ public class TransactionalFuture implements Callable, Future {
         // READ in the child are ignored. Call custom resolve function if
         // present and ref was set in parent since creation.
         for (Ref r : child.sets) {
+            Object v_child, v_parent, v_original;
             // Current value in child: always present in child.vals, because r
             // is in child.sets
-            Object v_child = child.vals.get(r);
+            v_child = child.vals.get(r);
             // Current value in parent: first look in vals, if it isn't there
             // look up the value before the transaction
-            Object v_parent;
             if (vals.containsKey(r)) {
                 v_parent = vals.get(r);
             } else {
@@ -404,7 +404,6 @@ public class TransactionalFuture implements Callable, Future {
             // Get original value, i.e. value when child was created: first look
             // in snapshot, if it isn't in snapshot look for value before
             // transaction
-            Object v_original;
             if (child.snapshot.containsKey(r)) {
                 v_original = child.snapshot.get(r);
             } else {
