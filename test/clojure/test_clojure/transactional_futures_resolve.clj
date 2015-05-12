@@ -101,6 +101,7 @@
   (dotimes [i 100]
     (let [r1 (ref 0 :resolve summing)]
       (dosync
+        ; Note: no "original" in in-tx-vals.
         (let [f (future (ref-set r1 (+ @r1 10)) (is (= 10 @r1)))]
           (ref-set r1 (+ @r1 20)) ; this deref should never read the value set in the future
           (is (= 20 @r1))
