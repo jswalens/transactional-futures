@@ -84,7 +84,9 @@ public class TransactionalFuture implements Callable, Future {
                 snapshot.put(r, parent.vals.get(r));
         }
 
-        tx.futures.add(this);
+        synchronized (tx.futures) {
+            tx.futures.add(this);
+        }
         running.set(true);
     }
 
@@ -142,16 +144,20 @@ public class TransactionalFuture implements Callable, Future {
             result = fn.call();
 
             // Wait for all futures to finish
-            int n;
-            do {
-                n = tx.futures.size();
-                for (TransactionalFuture f_ : tx.futures) {
+            int n_stopped = 0;
+            while (n_stopped != tx.numberOfFutures()) {
+                Set<TransactionalFuture> fs;
+                synchronized (tx.futures) {
+                    fs = new HashSet<TransactionalFuture>(tx.futures);
+                }
+                for (TransactionalFuture f_ : fs) {
                     if (f_ != this) // Don't merge into self
                         f_.get();
                 }
-            } while (n != tx.futures.size());
+                n_stopped = fs.size();
+            }
             // If in the mean time new futures were created, wait for them
-            // as well. No race condition because futures.size() won't
+            // as well. No race condition because number of futures won't
             // change for sure after last get, and only increases.
         } finally {
             future.remove();
