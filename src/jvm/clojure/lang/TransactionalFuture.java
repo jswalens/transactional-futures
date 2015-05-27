@@ -44,8 +44,119 @@ public class TransactionalFuture implements Callable, Future {
     // Result of future (return value of fn)
     Object result;
 
+    static class Vals<K, V> implements Map<K, V> {
+        final Map<K, V> vals = new HashMap<K, V>();
+        Vals<K, V> prev = null;
+
+        public class Entry<K, V> implements Map.Entry<K, V> {
+            K key;
+            V value;
+            Entry(K key, V value) { this.key = key; this.value = value; }
+            public K getKey() { return key; }
+            public V getValue() { return value; }
+            public V setValue(V value) { this.value = value; return value; } // XXX
+        }
+
+        Vals() {
+        }
+
+        Vals(Vals<K, V> prev) {
+            this.prev = prev;
+        }
+
+        public int size() {
+            int size = vals.size();
+            if (prev != null)
+                size += prev.size();
+            return size;
+        }
+
+        public boolean isEmpty() {
+            return vals.isEmpty() && (prev == null || prev.isEmpty());
+        }
+
+        public boolean containsKey(Object key) {
+            boolean present = vals.containsKey(key);
+            if (!present && prev != null)
+                return prev.containsKey(key);
+            return present;
+        }
+
+        public boolean containsValue(Object value) {
+            boolean present = vals.containsValue(value);
+            if (!present && prev != null)
+                return prev.containsValue(value);
+            return present;
+        }
+
+        public V get(Object key) {
+            V val = vals.get(key);
+            if (val == null && prev != null)
+                return prev.get(key);
+            return val;
+        }
+
+        public V put(K key, V value) {
+            return vals.put(key, value);
+        }
+
+        // XXX: Different semantics than Map.remove(): don't remove from prev.
+        public V remove(Object key) {
+            return vals.remove(key);
+        }
+
+        public void putAll(Map<? extends K, ? extends V> m) {
+            vals.putAll(m);
+        }
+
+        public void clear() { // XXX
+            this.vals.clear();
+            this.prev = null; // XXX is this ok?
+        }
+
+        // XXX: Different semantics than Map.keySet(): not backed by map
+        public Set<K> keySet() {
+            Set<K> set = new HashSet<K>(vals.keySet());
+            if (prev != null)
+                set.addAll(prev.keySet());
+            return set;
+        }
+
+        // XXX: Different semantics than Map.values(): not backed by map
+        public Collection<V> values() {
+            Collection<V> values = new ArrayList<V>();
+            for (K key : keySet()) {
+                values.add(get(key));
+            }
+            return values;
+        }
+
+        // XXX: Different semantics than Map.entrySet(): not backed by map
+        public Set<Map.Entry<K,V>> entrySet() {
+            Set<Map.Entry<K, V>> set = new HashSet<Map.Entry<K, V>>();
+            for (K key : keySet()) {
+                set.add(new Entry<K, V>(key, get(key)));
+            }
+            return set;
+        }
+
+        public boolean equals(Object o) { // XXX not implemented
+            throw new RuntimeException("not implemented");
+        }
+
+        public int hashCode() { // XXX not implemented
+            if (prev == null) {
+                return 1 + vals.hashCode();
+            } else {
+                return 2 + vals.hashCode() + prev.hashCode();
+            }
+            //throw new RuntimeException("not implemented");
+        }
+
+    }
+
     // In transaction values of refs (both read and written)
-    final Map<Ref, Object> vals = new HashMap<Ref, Object>();
+    Vals<Ref, Object> vals;
     // Refs set in this future. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
     // Snapshot: in transaction values of modified refs at the moment of
@@ -73,9 +184,14 @@ public class TransactionalFuture implements Callable, Future {
         this.fn = fn;
 
         // Initialize vals to parent vals
-        if (parent != null && parent.vals != null)
-            vals.putAll(parent.vals); // TODO: Possibly lots of copying here
+        if (parent != null) {
+            vals = new Vals<Ref, Object>(parent.vals);
+            parent.vals = new Vals<Ref, Object>(parent.vals);
+        } else {
+            vals = new Vals<Ref, Object>();
+        }
         // Set snapshot
+        // TODO: not necessary anymore as we now have Vals.
         if (parent != null) {
             // 1. Copy snapshot of parent
             snapshot.putAll(parent.snapshot); // TODO: lots of copying, needed?
