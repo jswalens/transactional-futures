@@ -87,7 +87,7 @@ public class LockingTransaction {
     long readPoint;
     // Futures created in transaction.
     // Access should be protected using synchronized.
-    Set<TransactionalFuture> futures = Collections.synchronizedSet(
+    final Set<TransactionalFuture> futures = Collections.synchronizedSet(
             new HashSet<TransactionalFuture>());
 
 
