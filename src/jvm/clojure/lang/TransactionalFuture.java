@@ -159,9 +159,9 @@ public class TransactionalFuture implements Callable, Future {
     Vals<Ref, Object> vals;
     // Refs set in this future. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
-    // Snapshot: in transaction values of modified refs at the moment of
+    // Snapshot: in transaction values of refs at the moment of
     // creation of this future (set in any ancestor)
-    final Map<Ref, Object> snapshot = new HashMap<Ref, Object>();
+    Vals<Ref, Object> snapshot;
     // Refs commuted, and list of commute functions
     final Map<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
     // Ensured refs. All hold readLock.
@@ -185,19 +185,11 @@ public class TransactionalFuture implements Callable, Future {
 
         // Initialize vals to parent vals
         if (parent != null) {
+            snapshot = parent.vals;
             vals = new Vals<Ref, Object>(parent.vals);
             parent.vals = new Vals<Ref, Object>(parent.vals);
         } else {
             vals = new Vals<Ref, Object>();
-        }
-        // Set snapshot
-        // TODO: not necessary anymore as we now have Vals.
-        if (parent != null) {
-            // 1. Copy snapshot of parent
-            snapshot.putAll(parent.snapshot); // TODO: lots of copying, needed?
-            // 2. Add sets from parent
-            for (Ref r : parent.sets)
-                snapshot.put(r, parent.vals.get(r));
         }
 
         synchronized (tx.futures) {
@@ -388,9 +380,10 @@ public class TransactionalFuture implements Callable, Future {
     Object doGet(Ref ref) {
         if (!running.get())
             throw new LockingTransaction.StoppedEx();
-        if (vals.containsKey(ref))
-            return vals.get(ref);
-        return requireBeforeTransaction(ref);
+        Object val = vals.get(ref);
+        if (val == null)
+            return requireBeforeTransaction(ref);
+        return val;
     }
 
     // Get the version of ref before the transaction started, or null if the
@@ -472,8 +465,8 @@ public class TransactionalFuture implements Callable, Future {
     Object doCommute(Ref ref, IFn fn, ISeq args) {
         if (!running.get())
             throw new LockingTransaction.StoppedEx();
-        if (!vals.containsKey(ref)) {
-            Object val = null;
+        Object val = vals.get(ref);
+        if (val == null) {
             try {
                 ref.lockRead();
                 val = ref.tvals == null ? null : ref.tvals.val;
@@ -486,7 +479,7 @@ public class TransactionalFuture implements Callable, Future {
         if (fns == null)
             commutes.put(ref, fns = new ArrayList<CFn>());
         fns.add(new CFn(fn, args));
-        Object ret = fn.applyTo(RT.cons(vals.get(ref), args));
+        Object ret = fn.applyTo(RT.cons(val, args));
         vals.put(ref, ret);
         return ret;
     }
@@ -512,23 +505,20 @@ public class TransactionalFuture implements Callable, Future {
         // READ in the child are ignored. Call custom resolve function if
         // present and ref was set in parent since creation.
         for (Ref r : child.sets) {
-            Object v_child, v_parent, v_original;
             // Current value in child: always present in child.vals, because r
             // is in child.sets
-            v_child = child.vals.get(r);
+            Object v_child = child.vals.get(r);
             // Current value in parent: first look in vals, if it isn't there
             // look up the value before the transaction
-            if (vals.containsKey(r)) {
-                v_parent = vals.get(r);
-            } else {
+            Object v_parent = vals.get(r);
+            if (v_parent == null) {
                 v_parent = requireBeforeTransaction(r);
             }
             // Get original value, i.e. value when child was created: first look
             // in snapshot, if it isn't in snapshot look for value before
             // transaction
-            if (child.snapshot.containsKey(r)) {
-                v_original = child.snapshot.get(r);
-            } else {
+            Object v_original = child.snapshot.get(r);
+            if (v_original == null) {
                 v_original = requireBeforeTransaction(r);
             }
             if (v_parent == v_original) { // no conflict, just take over value
