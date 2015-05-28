@@ -48,40 +48,6 @@ public class TransactionalFuture implements Callable, Future {
         final Map<K, V> vals = new HashMap<K, V>();
         final Vals<K, V> prev;
 
-        public class ValsIterator {
-            final Iterator<Map.Entry<K, V>> underlying_iterator = vals.entrySet().iterator();
-            final ValsIterator prev_iterator;
-            final Set<K> seen_keys = new HashSet<K>(vals.keySet());
-
-            public ValsIterator() {
-                if (prev != null)
-                    prev_iterator = prev.iterator();
-                else
-                    prev_iterator = null;
-            }
-
-            // As opposed to Iterator.next(), this does NOT throw
-            // NoSuchElementException after iterating through all elements, but
-            // returns null.
-            public Map.Entry<K, V> next() {
-                if (underlying_iterator.hasNext()) {
-                    return underlying_iterator.next();
-                }
-                if (prev_iterator != null) {
-                    while (true) {
-                        Map.Entry<K, V> e = prev_iterator.next();
-                        if (e == null)
-                            return null;
-                        boolean added = seen_keys.add(e.getKey());
-                        if (added)
-                            return e;
-                        // else: was already in seen_keys
-                    }
-                }
-                return null;
-            }
-        }
-
         Vals() { this.prev = null; }
         Vals(Vals<K, V> prev) { this.prev = prev; }
 
@@ -104,15 +70,11 @@ public class TransactionalFuture implements Callable, Future {
             this.vals.clear();
             //this.prev = null; // XXX is this ok?
         }
-
-        public ValsIterator iterator() {
-            return new ValsIterator();
-        }
     }
 
-    // In transaction values of refs (both read and written)
+    // In transaction values of refs (written by set or commute)
     Vals<Ref, Object> vals;
-    // Refs set in this future. (Their value is in vals.)
+    // Refs set (not commuted) in this future. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
     // Snapshot: in transaction values of refs at the moment of
     // creation of this future (set in any ancestor)
@@ -565,6 +527,7 @@ public class TransactionalFuture implements Callable, Future {
                 for (CFn f : e.getValue()) {
                     vals.put(ref, f.fn.applyTo(RT.cons(vals.get(ref), f.args)));
                 }
+                sets.add(ref);
             }
 
             // Sets: write-lock them
@@ -574,23 +537,16 @@ public class TransactionalFuture implements Callable, Future {
             }
 
             // Validate (if invalid, throws IllegalStateException)
-            Vals<Ref, Object>.ValsIterator it = vals.iterator();
-            Map.Entry<Ref, Object> e = it.next();
-            while (e != null) {
-                Ref ref = e.getKey();
-                ref.validate(ref.getValidator(), e.getValue());
-                e = it.next();
+            for (Ref ref : sets) {
+                ref.validate(ref.getValidator(), vals.get(ref));
             }
 
             // At this point, all values calced, all refs to be written locked,
             // so commit.
             long commitPoint = LockingTransaction.lastPoint.incrementAndGet();
-            it = vals.iterator();
-            e = it.next();
-            while (e != null) {
-                Ref ref = e.getKey();
+            for (Ref ref : sets) {
                 Object oldval = ref.tvals == null ? null : ref.tvals.val;
-                Object newval = e.getValue();
+                Object newval = vals.get(ref);
                 int hcount = ref.histCount();
 
                 if (ref.tvals == null) {
@@ -607,8 +563,6 @@ public class TransactionalFuture implements Callable, Future {
                 // Notify refs with watches
                 if (ref.getWatches().count() > 0)
                     notify.add(new Notify(ref, oldval, newval));
-
-                e = it.next();
             }
 
             // Done
