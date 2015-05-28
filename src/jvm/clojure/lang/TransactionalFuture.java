@@ -73,6 +73,7 @@ public class TransactionalFuture implements Callable, Future {
     }
 
     // In transaction values of refs (written by set or commute)
+    // The keys of this map = union of sets and commutes.
     Vals<Ref, Object> vals;
     // Refs set (not commuted) in this future. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
