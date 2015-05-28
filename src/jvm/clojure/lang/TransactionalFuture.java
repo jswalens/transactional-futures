@@ -66,6 +66,10 @@ public class TransactionalFuture implements Callable, Future {
             vals.putAll(m);
         }
 
+        public boolean isEmpty() {
+            return vals.isEmpty();
+        }
+
         public void clear() { // XXX
             this.vals.clear();
             //this.prev = null; // XXX is this ok?
@@ -73,13 +77,13 @@ public class TransactionalFuture implements Callable, Future {
     }
 
     // In transaction values of refs (written by set or commute)
-    // The keys of this map = union of sets and commutes.
+    // The keys of this map and its prev's = union of sets and commutes.
     Vals<Ref, Object> vals;
     // Refs set (not commuted) in this future. (Their value is in vals.)
     final Set<Ref> sets = new HashSet<Ref>();
     // Snapshot: in transaction values of refs at the moment of
     // creation of this future (set in any ancestor)
-    Vals<Ref, Object> snapshot;
+    final Vals<Ref, Object> snapshot;
     // Refs commuted, and list of commute functions
     final Map<Ref, ArrayList<CFn>> commutes = new TreeMap<Ref, ArrayList<CFn>>();
     // Ensured refs. All hold readLock.
@@ -103,10 +107,19 @@ public class TransactionalFuture implements Callable, Future {
 
         // Initialize vals to parent vals
         if (parent != null) {
-            snapshot = parent.vals;
-            vals = new Vals<Ref, Object>(parent.vals);
-            parent.vals = new Vals<Ref, Object>(parent.vals);
+            if (!parent.vals.isEmpty()) {
+                snapshot = parent.vals;
+                vals = new Vals<Ref, Object>(parent.vals);
+                parent.vals = new Vals<Ref, Object>(parent.vals);
+            } else {
+                // Optimization: if parent has not set anything, this can point
+                // straight to the parent's ancestor, and parent can "re-use"
+                // his vals. This way we avoid creating empty vals.
+                snapshot = parent.vals.prev;
+                vals = new Vals<Ref, Object>(parent.vals.prev);
+            }
         } else {
+            snapshot = null;
             vals = new Vals<Ref, Object>();
         }
 
@@ -429,16 +442,17 @@ public class TransactionalFuture implements Callable, Future {
             // Current value in parent: first look in vals, if it isn't there
             // look up the value before the transaction
             Object v_parent = vals.get(r);
-            if (v_parent == null) {
+            if (v_parent == null)
                 v_parent = requireBeforeTransaction(r);
-            }
             // Get original value, i.e. value when child was created: first look
             // in snapshot, if it isn't in snapshot look for value before
             // transaction
-            Object v_original = child.snapshot.get(r);
-            if (v_original == null) {
+            Object v_original = null;
+            if (child.snapshot != null)
+                v_original = child.snapshot.get(r);
+            if (v_original == null)
                 v_original = requireBeforeTransaction(r);
-            }
+
             if (v_parent == v_original) { // no conflict, just take over value
                 vals.put(r, v_child);
             } else { // conflict
