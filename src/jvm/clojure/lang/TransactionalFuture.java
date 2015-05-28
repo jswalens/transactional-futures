@@ -44,52 +44,48 @@ public class TransactionalFuture implements Callable, Future {
     // Result of future (return value of fn)
     Object result;
 
-    static class Vals<K, V> implements Map<K, V> {
+    static class Vals<K, V> {
         final Map<K, V> vals = new HashMap<K, V>();
-        Vals<K, V> prev = null;
+        final Vals<K, V> prev;
 
-        public class Entry<K, V> implements Map.Entry<K, V> {
-            K key;
-            V value;
-            Entry(K key, V value) { this.key = key; this.value = value; }
-            public K getKey() { return key; }
-            public V getValue() { return value; }
-            public V setValue(V value) { this.value = value; return value; } // XXX
+        public class ValsIterator {
+            final Iterator<Map.Entry<K, V>> underlying_iterator = vals.entrySet().iterator();
+            final ValsIterator prev_iterator;
+            final Set<K> seen_keys = new HashSet<K>(vals.keySet());
+
+            public ValsIterator() {
+                if (prev != null)
+                    prev_iterator = prev.iterator();
+                else
+                    prev_iterator = null;
+            }
+
+            // As opposed to Iterator.next(), this does NOT throw
+            // NoSuchElementException after iterating through all elements, but
+            // returns null.
+            public Map.Entry<K, V> next() {
+                if (underlying_iterator.hasNext()) {
+                    return underlying_iterator.next();
+                }
+                if (prev_iterator != null) {
+                    while (true) {
+                        Map.Entry<K, V> e = prev_iterator.next();
+                        if (e == null)
+                            return null;
+                        boolean added = seen_keys.add(e.getKey());
+                        if (added)
+                            return e;
+                        // else: was already in seen_keys
+                    }
+                }
+                return null;
+            }
         }
 
-        Vals() {
-        }
+        Vals() { this.prev = null; }
+        Vals(Vals<K, V> prev) { this.prev = prev; }
 
-        Vals(Vals<K, V> prev) {
-            this.prev = prev;
-        }
-
-        public int size() {
-            int size = vals.size();
-            if (prev != null)
-                size += prev.size();
-            return size;
-        }
-
-        public boolean isEmpty() {
-            return vals.isEmpty() && (prev == null || prev.isEmpty());
-        }
-
-        public boolean containsKey(Object key) {
-            boolean present = vals.containsKey(key);
-            if (!present && prev != null)
-                return prev.containsKey(key);
-            return present;
-        }
-
-        public boolean containsValue(Object value) {
-            boolean present = vals.containsValue(value);
-            if (!present && prev != null)
-                return prev.containsValue(value);
-            return present;
-        }
-
-        public V get(Object key) {
+        public V get(K key) {
             V val = vals.get(key);
             if (val == null && prev != null)
                 return prev.get(key);
@@ -100,59 +96,18 @@ public class TransactionalFuture implements Callable, Future {
             return vals.put(key, value);
         }
 
-        // XXX: Different semantics than Map.remove(): don't remove from prev.
-        public V remove(Object key) {
-            return vals.remove(key);
-        }
-
         public void putAll(Map<? extends K, ? extends V> m) {
             vals.putAll(m);
         }
 
         public void clear() { // XXX
             this.vals.clear();
-            this.prev = null; // XXX is this ok?
+            //this.prev = null; // XXX is this ok?
         }
 
-        // XXX: Different semantics than Map.keySet(): not backed by map
-        public Set<K> keySet() {
-            Set<K> set = new HashSet<K>(vals.keySet());
-            if (prev != null)
-                set.addAll(prev.keySet());
-            return set;
+        public ValsIterator iterator() {
+            return new ValsIterator();
         }
-
-        // XXX: Different semantics than Map.values(): not backed by map
-        public Collection<V> values() {
-            Collection<V> values = new ArrayList<V>();
-            for (K key : keySet()) {
-                values.add(get(key));
-            }
-            return values;
-        }
-
-        // XXX: Different semantics than Map.entrySet(): not backed by map
-        public Set<Map.Entry<K,V>> entrySet() {
-            Set<Map.Entry<K, V>> set = new HashSet<Map.Entry<K, V>>();
-            for (K key : keySet()) {
-                set.add(new Entry<K, V>(key, get(key)));
-            }
-            return set;
-        }
-
-        public boolean equals(Object o) { // XXX not implemented
-            throw new RuntimeException("not implemented");
-        }
-
-        public int hashCode() { // XXX not implemented
-            if (prev == null) {
-                return 1 + vals.hashCode();
-            } else {
-                return 2 + vals.hashCode() + prev.hashCode();
-            }
-            //throw new RuntimeException("not implemented");
-        }
-
     }
 
     // In transaction values of refs (both read and written)
@@ -619,15 +574,20 @@ public class TransactionalFuture implements Callable, Future {
             }
 
             // Validate (if invalid, throws IllegalStateException)
-            for (Map.Entry<Ref, Object> e : vals.entrySet()) {
+            Vals<Ref, Object>.ValsIterator it = vals.iterator();
+            Map.Entry<Ref, Object> e = it.next();
+            while (e != null) {
                 Ref ref = e.getKey();
                 ref.validate(ref.getValidator(), e.getValue());
+                e = it.next();
             }
 
             // At this point, all values calced, all refs to be written locked,
             // so commit.
             long commitPoint = LockingTransaction.lastPoint.incrementAndGet();
-            for (Map.Entry<Ref, Object> e : vals.entrySet()) {
+            it = vals.iterator();
+            e = it.next();
+            while (e != null) {
                 Ref ref = e.getKey();
                 Object oldval = ref.tvals == null ? null : ref.tvals.val;
                 Object newval = e.getValue();
@@ -647,6 +607,8 @@ public class TransactionalFuture implements Callable, Future {
                 // Notify refs with watches
                 if (ref.getWatches().count() > 0)
                     notify.add(new Notify(ref, oldval, newval));
+
+                e = it.next();
             }
 
             // Done
