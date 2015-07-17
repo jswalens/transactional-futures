@@ -12,7 +12,6 @@ package clojure.lang;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class TransactionalFuture implements Callable, Future {
 
@@ -93,12 +92,6 @@ public class TransactionalFuture implements Callable, Future {
     // Futures, merged into this one
     final Set<TransactionalFuture> merged = new HashSet<TransactionalFuture>();
 
-    // Is transaction running?
-    // Used to stop this future from elsewhere (e.g. for barge).
-    // TODO: if one future should stop running, all of them should stop and the
-    // transaction should stop => move this to LockingTransaction.
-    final AtomicBoolean running = new AtomicBoolean(false);
-
 
     TransactionalFuture(LockingTransaction tx, TransactionalFuture parent,
         Callable fn) {
@@ -126,7 +119,6 @@ public class TransactionalFuture implements Callable, Future {
         synchronized (tx.futures) {
             tx.futures.add(this);
         }
-        running.set(true);
     }
 
 
@@ -153,14 +145,15 @@ public class TransactionalFuture implements Callable, Future {
 
     // Execute future (in this thread).
     public Object call() throws Exception {
+        if(!tx.isRunning())
+            throw new LockingTransaction.StoppedEx();
+
         TransactionalFuture f = future.get();
         if (f != null)
             throw new IllegalStateException("Already in a future");
 
         try {
             future.set(this);
-            if(!running.get())
-                throw new LockingTransaction.StoppedEx();
             result = fn.call();
         } finally {
             future.remove();
@@ -178,7 +171,7 @@ public class TransactionalFuture implements Callable, Future {
 
         try {
             future.set(this);
-            if(!running.get())
+            if(!tx.isRunning())
                 throw new LockingTransaction.StoppedEx();
             result = fn.call();
 
@@ -216,7 +209,7 @@ public class TransactionalFuture implements Callable, Future {
         if (current == null) { // outside transaction
             return Agent.soloExecutor.submit(fn);
         } else { // inside transaction
-            if (!current.running.get())
+            if (!current.tx.isRunning())
                 throw new LockingTransaction.StoppedEx();
             TransactionalFuture f = new TransactionalFuture(current.tx, current,
                 fn);
@@ -285,8 +278,6 @@ public class TransactionalFuture implements Callable, Future {
     // Indicate future as having stopped (with certain transaction state).
     // OK to call twice (idempotent).
     void stop(int status) {
-        running.set(false);
-        // From now on, all operations on refs will throw StoppedEx
         vals.clear();
         sets.clear();
         commutes.clear();
@@ -309,7 +300,7 @@ public class TransactionalFuture implements Callable, Future {
 
     // Get
     Object doGet(Ref ref) {
-        if (!running.get())
+        if (!tx.isRunning())
             throw new LockingTransaction.StoppedEx();
         Object val = vals.get(ref);
         if (val == null)
@@ -351,7 +342,7 @@ public class TransactionalFuture implements Callable, Future {
 
     // Set
     Object doSet(Ref ref, Object val) {
-        if (!running.get())
+        if (!tx.isRunning())
             throw new LockingTransaction.StoppedEx();
         if (commutes.containsKey(ref))
             throw new IllegalStateException("Can't set after commute");
@@ -366,7 +357,7 @@ public class TransactionalFuture implements Callable, Future {
 
     // Ensure
     void doEnsure(Ref ref) {
-        if (!running.get())
+        if (!tx.isRunning())
             throw new LockingTransaction.StoppedEx();
         if (ensures.contains(ref))
             return;
@@ -394,7 +385,7 @@ public class TransactionalFuture implements Callable, Future {
 
     // Commute
     Object doCommute(Ref ref, IFn fn, ISeq args) {
-        if (!running.get())
+        if (!tx.isRunning())
             throw new LockingTransaction.StoppedEx();
         Object val = vals.get(ref);
         if (val == null) {

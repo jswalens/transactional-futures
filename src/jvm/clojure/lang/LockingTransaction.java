@@ -109,6 +109,8 @@ public class LockingTransaction {
                 info.latch.countDown();
             }
             info = null;
+            // From now on, isRunning returns false and all operations on refs
+            // (in TransactionalFuture) will throw StoppedEx
         }
         int n_stopped = 0;
         while (n_stopped != numberOfFutures()) {
@@ -136,6 +138,11 @@ public class LockingTransaction {
         synchronized (futures) {
             futures.clear();
         }
+    }
+
+    // Is this transaction running?
+    boolean isRunning() {
+        return info != null && info.running();
     }
 
 
