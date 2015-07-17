@@ -165,14 +165,15 @@ public class TransactionalFuture implements Callable, Future {
     // This will throw an ExecutionException if an inner future threw an
     // exception (e.g. StoppedEx or RetryEx).
     public Object callAndWait() throws Exception {
+        if(!tx.isRunning())
+            throw new LockingTransaction.StoppedEx();
+
         TransactionalFuture f = future.get();
         if (f != null)
             throw new IllegalStateException("Already in a future");
 
         try {
             future.set(this);
-            if(!tx.isRunning())
-                throw new LockingTransaction.StoppedEx();
             result = fn.call();
 
             // Wait for all futures to finish
