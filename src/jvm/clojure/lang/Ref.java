@@ -32,6 +32,12 @@ public class Ref extends ARef implements IFn, Comparable<Ref>, IRef {
             return 1;
     }
 
+    public int hashCode() {
+        return (int) this.id;
+        // in case the integer overflows, this re-uses the old values, which is
+        // correct behavior
+    }
+
     // Ref value and time point at which they were committed
     public static class TVal {
         Object val;
